@@ -20,7 +20,7 @@ jobs:
           - os: macos
             runs-on: macos-latest
     env:
-      TEST_V2RAY_LINK: ${{ secrets.TEST_SINGBOX_LINK }}
+      TEST_SINGBOX_LINK: ${{ secrets.TEST_SINGBOX_LINK }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
