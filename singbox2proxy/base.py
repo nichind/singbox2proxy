@@ -117,7 +117,6 @@ class SingBoxCore:
             return False
 
         def _install_via_sh(
-            self,
             beta: bool = False,
             version: str | None = None,
             use_sudo: bool = False,
@@ -179,11 +178,13 @@ class SingBoxCore:
                 logging.info("sing-box installation completed successfully")
                 return True
             except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"sing-box installer failed with exit code {e.returncode}")
+                logging.warning(f"sing-box installer failed with exit code {e.returncode}")
+                return False
             except Exception as e:
-                raise RuntimeError(f"Error running sing-box installer: {e}")
+                logging.warning(f"Error running sing-box installer: {e}")
+                return False
 
-        def _install_via_package_manager(self) -> bool:
+        def _install_via_package_manager() -> bool:
             """
             Attempt to install sing-box using common package managers.
 
@@ -351,14 +352,21 @@ class SingBoxCore:
         if _test_terminal():
             return "sing-box"
 
-        if _install_via_sh(self):
-            if _test_terminal():
-                return "sing-box"
+        try:
+            if _install_via_sh():
+                if _test_terminal():
+                    return "sing-box"
+        except Exception as e:
+            logging.warning(f"Failed to install sing-box via install script: {e}")
 
-        if _install_via_package_manager(self):
-            if _test_terminal():
-                return "sing-box"
+        try:
+            if _install_via_package_manager():
+                if _test_terminal():
+                    return "sing-box"
+        except Exception as e:
+            logging.warning(f"Failed to install sing-box via package manager: {e}")
 
+        logging.warning("sing-box could not be installed automatically. Please install it manually.")
         return None
 
 
