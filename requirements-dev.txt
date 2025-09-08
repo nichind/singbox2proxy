@@ -1,0 +1,6 @@
+aiohttp
+aiohttp-socks
+pysocks
+requests
+pytest
+pytest-asyncio

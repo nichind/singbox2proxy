@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "singbox2proxy.VERSION"}
+
+[project]
+name = "singbox2proxy"
+dynamic = ["version"]
+authors = [
+    {name = "nichind", email = "nichind@proton.me"},
+]
+description = "🐳 Use sing-box proxies (VLESS, VMess, Trojan, Shadowsocks, Hysteria, Hysteria2, TUIC, WireGuard, SSH) in python web clients with chaining support."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3.9",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+keywords = [
+    "sing-box",
+    "hysteria2",
+    "v2ray",
+    "v2core",
+    "v2ray-core",
+    "proxy",
+    "vless",
+    "vmess",
+    "shadowsocks",
+    "trojan",
+    "python",
+    "cli"
+]
+dependencies = ["psutil"]
+
+[project.urls]
+"Homepage" = "https://github.com/nichind/sing-box2proxy"
+"Issues" = "https://github.com/nichind/sing-box2proxy/issues"
+
+[tool.setuptools]
+packages = {find = {}}
+
+[tool.ruff]
+line-length = 140

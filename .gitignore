@@ -1,0 +1,11 @@
+# Ignore everything
+/*
+
+!/singbox2proxy/
+!/tests/
+*.pyc
+__pycache__/
+!pyproject.toml
+!README.md
+!requirements*.txt
+!.git*
