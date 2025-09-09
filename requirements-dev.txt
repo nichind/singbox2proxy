@@ -4,3 +4,4 @@ pysocks
 requests
 pytest
 pytest-asyncio
+curl-cffi
