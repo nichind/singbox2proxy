@@ -19,6 +19,7 @@ import psutil
 import shutil
 import sys
 from pathlib import Path
+from .client import SingBoxClient
 
 
 # Disable all logging output
@@ -82,6 +83,7 @@ class SingBoxCore:
         """Ensure that the sing-box executable is available.
         Returns the path (terminal alias) to the executable, or None if not found/installed.
         """
+
         def _test_terminal() -> bool:
             "Check if sing-box is accessible from terminal"
             executables = ["sing-box"]
@@ -322,7 +324,7 @@ class SingBoxCore:
                         except Exception:
                             pass
                         proc_p.wait(timeout=5)
-                        
+
                     t_out.join(timeout=1)
                     t_err.join(timeout=1)
 
@@ -374,13 +376,13 @@ core = SingBoxCore()
 
 
 def _safe_base64_decode(data: str) -> str:
-    """Safely decode base64 data with proper padding and error handling."""
+    """Safely decode base64 data"""
     try:
         # Add padding if needed
         missing_padding = len(data) % 4
         if missing_padding:
-            data += '=' * (4 - missing_padding)
-        
+            data += "=" * (4 - missing_padding)
+
         # Try to decode
         decoded_bytes = base64.b64decode(data)
         return decoded_bytes.decode("utf-8")
@@ -398,6 +400,7 @@ class SingBoxProxy:
         config_only: bool = False,
         config_file_path: os.PathLike | str | None = None,
         config_directory: os.PathLike | str | None = None,
+        client: SingBoxClient = None,
     ):
         start_time = time.time()
         """
@@ -447,10 +450,51 @@ class SingBoxProxy:
         # Register this instance for global cleanup
         _active_processes.add(self)
 
+        if client is not False:
+            self.client = client._set_parent(self) if isinstance(client, SingBoxClient) else SingBoxClient(self)
+            self.request = self.client.request
+            self.get = self.client.get
+            self.post = self.client.post
+
         # Start SingBox if not in config_only mode
         if not config_only:
             self.start()
         logging.debug(f"SingBoxProxy initialized in {time.time() - start_time:.2f} seconds")
+
+    def __repr__(self) -> str:
+        pid = None
+        try:
+            pid = self.singbox_process.pid if self.singbox_process else None
+        except Exception:
+            pid = None
+        return (
+            f"<SingBoxProxy http={self.http_port!r} socks={self.socks_port!r} "
+            f"running={self.running!r} pid={pid!r} config_url={getattr(self, 'config_url', None)!r} "
+            f"config_path={str(self.config_path) if getattr(self, 'config_path', None) else None!r}>"
+        )
+
+    def __str__(self) -> str:
+        """print(SingBoxProxy)"""
+        if self.running:
+            try:
+                socks = self.socks5_proxy_url
+            except Exception:
+                socks = f"127.0.0.1:{self.socks_port}"
+            try:
+                http = self.http_proxy_url
+            except Exception:
+                http = f"127.0.0.1:{self.http_port}"
+            return f"SingBoxProxy(running, socks={socks}, http={http})"
+        else:
+            return f"SingBoxProxy(stopped, socks_port={self.socks_port}, http_port={self.http_port})"
+
+    @property
+    def proxy_for_requests(self):
+        "Get a proxies dict suitable for requests library"
+        return {
+            "http": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
+            "https": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
+        }
 
     @property
     def stdout(self) -> str:
@@ -578,7 +622,7 @@ class SingBoxProxy:
             # Extract user info (uuid)
             if "@" not in parsed_url.netloc:
                 raise ValueError("Invalid VLESS format: missing @ separator")
-            
+
             user_info = parsed_url.netloc.split("@")[0]
 
             # Extract host and port
@@ -612,36 +656,22 @@ class SingBoxProxy:
             # Handle transport settings
             transport_type = params.get("type", "tcp")
             if transport_type == "ws":
-                outbound["transport"] = {
-                    "type": "ws", 
-                    "path": params.get("path", "/"), 
-                    "headers": {}
-                }
+                outbound["transport"] = {"type": "ws", "path": params.get("path", "/"), "headers": {}}
                 # Handle host header
                 if params.get("host"):
                     outbound["transport"]["headers"]["Host"] = params.get("host")
             elif transport_type == "grpc":
-                outbound["transport"] = {
-                    "type": "grpc", 
-                    "service_name": params.get("serviceName", params.get("path", ""))
-                }
+                outbound["transport"] = {"type": "grpc", "service_name": params.get("serviceName", params.get("path", ""))}
 
             # Handle TLS settings
             security = params.get("security", "none")
             if security == "tls":
-                outbound["tls"] = {
-                    "enabled": True, 
-                    "server_name": params.get("sni", params.get("host", host))
-                }
+                outbound["tls"] = {"enabled": True, "server_name": params.get("sni", params.get("host", host))}
             elif security == "reality":
                 outbound["tls"] = {
                     "enabled": True,
                     "server_name": params.get("sni", params.get("host", host)),
-                    "reality": {
-                        "enabled": True, 
-                        "public_key": params.get("pbk", ""), 
-                        "short_id": params.get("sid", "")
-                    },
+                    "reality": {"enabled": True, "public_key": params.get("pbk", ""), "short_id": params.get("sid", "")},
                 }
 
             return outbound
@@ -658,10 +688,10 @@ class SingBoxProxy:
             # URL decode the link first to handle encoded characters
             link = urllib.parse.unquote(link.replace("&amp;", "&"))
             parsed_url = urllib.parse.urlparse(link)
-            
+
             # Check if this is actually a VLESS/VMess link disguised as SS
             query_params = dict(urllib.parse.parse_qsl(parsed_url.query.replace("&amp;", "&")))
-            if any(param in query_params for param in ['type', 'security', 'encryption', 'host', 'path']):
+            if any(param in query_params for param in ["type", "security", "encryption", "host", "path"]):
                 # This looks like a VLESS/VMess link with ss:// prefix, treat as VLESS
                 # Convert ss:// to vless:// and parse as VLESS
                 vless_link = link.replace("ss://", "vless://", 1)
@@ -671,7 +701,7 @@ class SingBoxProxy:
             if "@" in parsed_url.netloc:
                 # Format: ss://base64(method:password)@host:port or ss://userinfo@host:port
                 user_info_part, host_port = parsed_url.netloc.split("@", 1)
-                
+
                 # Try to decode as base64 first
                 try:
                     user_info = _safe_base64_decode(user_info_part)
@@ -689,7 +719,7 @@ class SingBoxProxy:
                         # Assume it's a UUID/password
                         method = "aes-256-gcm"  # Modern default
                         password = user_info_part
-                
+
                 # Parse host and port
                 if ":" in host_port:
                     host, port = host_port.rsplit(":", 1)
@@ -755,7 +785,11 @@ class SingBoxProxy:
             transport_type = params.get("type", "tcp")
             host_header = params.get("host", "")
             if transport_type == "ws":
-                outbound["transport"] = {"type": "ws", "path": params.get("path", "/"), "headers": {"Host": host_header} if host_header else {}}
+                outbound["transport"] = {
+                    "type": "ws",
+                    "path": params.get("path", "/"),
+                    "headers": {"Host": host_header} if host_header else {},
+                }
             elif transport_type == "grpc":
                 outbound["transport"] = {"type": "grpc", "service_name": params.get("serviceName", params.get("path", ""))}
 
@@ -873,7 +907,7 @@ class SingBoxProxy:
 
             # Parse query parameters
             params = dict(urllib.parse.parse_qsl(parsed_url.query))
-            
+
             peer_public_key = params.get("public_key", "")
             if not peer_public_key:
                 raise ValueError("WireGuard link must contain a peer_public_key")
