@@ -6,6 +6,6 @@
 *.pyc
 __pycache__/
 !pyproject.toml
-!README.md
+!readme.md
 !requirements*.txt
 !.git*

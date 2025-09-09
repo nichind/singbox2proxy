@@ -1627,11 +1627,15 @@ class SingBoxProxy:
     @property
     def socks5_proxy_url(self):
         """Get the SOCKS5 proxy URL."""
+        if not self.socks_port:
+            return None
         return f"socks5://127.0.0.1:{self.socks_port}"
 
     @property
     def http_proxy_url(self):
         """Get the HTTP proxy URL."""
+        if not self.http_port:
+            return None
         return f"http://127.0.0.1:{self.http_port}"
 
     @property
