@@ -12,7 +12,7 @@ authors = [
     {name = "nichind", email = "nichind@proton.me"},
 ]
 description = "🐳 Use sing-box proxies (VLESS, VMess, Trojan, Shadowsocks, Hysteria, Hysteria2, TUIC, WireGuard, SSH) with chaining support in python web clients."
-readme = "README.md"
+readme = "readme.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 classifiers = [
