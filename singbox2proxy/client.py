@@ -1,7 +1,7 @@
 class SingBoxClient:
     "HTTP client for SingBox"
 
-    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 3, timeout: int = 60):
+    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10):
         self.client = client
         self.proxy = client.proxy_for_requests if client else None
         self.auto_retry = auto_retry
