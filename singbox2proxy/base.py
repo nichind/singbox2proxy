@@ -30,6 +30,10 @@ _active_processes = weakref.WeakSet()
 _cleanup_lock = threading.RLock()
 _signal_handlers_registered = False
 
+# Global port allocation tracking
+_allocated_ports = set()
+_port_allocation_lock = threading.RLock()
+
 
 def _register_signal_handlers():
     """Register signal handlers for process cleanup."""
@@ -531,28 +535,35 @@ class SingBoxProxy:
 
     def _pick_unused_port(self, exclude_port: int | list = None) -> int:
         start_time = time.time()
-        # Try to get a system-assigned port first
-        if not exclude_port:
-            exclude_port = []
-        elif isinstance(exclude_port, int):
-            exclude_port = [exclude_port]
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("localhost", 0))  # Let OS choose a free port
-                _, port = s.getsockname()
-                if port not in exclude_port:
+        with _port_allocation_lock:
+            # Try to get a system-assigned port first
+            if not exclude_port:
+                exclude_port = []
+            elif isinstance(exclude_port, int):
+                exclude_port = [exclude_port]
+            
+            # Add already allocated ports to exclude list
+            exclude_port = exclude_port + list(_allocated_ports)
+            
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("localhost", 0))  # Let OS choose a free port
+                    _, port = s.getsockname()
+                    if port not in exclude_port:
+                        _allocated_ports.add(port)
+                        return port
+            except Exception as e:
+                logging.warning(f"Failed to get system-assigned port: {str(e)}")
+
+            # If that fails, try a few random ports
+            for _ in range(100):
+                port = random.randint(10000, 65000)
+                if port not in exclude_port and not self._is_port_in_use(port):
+                    _allocated_ports.add(port)
+                    logging.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
                     return port
-        except Exception as e:
-            logging.warning(f"Failed to get system-assigned port: {str(e)}")
 
-        # If that fails, try a few random ports
-        for _ in range(100):
-            port = random.randint(10000, 65000)
-            if port not in exclude_port and not self._is_port_in_use(port):
-                logging.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
-                return port
-
-        raise RuntimeError("Could not find an unused port")
+            raise RuntimeError("Could not find an unused port")
 
     def _parse_vmess_link(self, link: str) -> dict:
         """Parse a VMess link into a sing-box configuration."""
@@ -1398,6 +1409,13 @@ class SingBoxProxy:
                 logging.warning(f"Failed to remove config file {self.config_file_path}: {str(e)}")
             finally:
                 self.config_file_path = None
+
+        # Release allocated ports
+        with _port_allocation_lock:
+            if hasattr(self, 'http_port') and self.http_port:
+                _allocated_ports.discard(self.http_port)
+            if hasattr(self, 'socks_port') and self.socks_port:
+                _allocated_ports.discard(self.socks_port)
 
         # Reset process reference
         self.singbox_process = None
