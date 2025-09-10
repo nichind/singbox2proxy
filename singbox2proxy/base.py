@@ -19,7 +19,6 @@ import psutil
 import shutil
 import sys
 from pathlib import Path
-from .client import SingBoxClient
 
 
 # Disable all logging output
@@ -404,7 +403,7 @@ class SingBoxProxy:
         config_only: bool = False,
         config_file_path: os.PathLike | str | None = None,
         config_directory: os.PathLike | str | None = None,
-        client: SingBoxClient = None,
+        client: "SingBoxClient" = None,
     ):
         start_time = time.time()
         """
@@ -541,10 +540,10 @@ class SingBoxProxy:
                 exclude_port = []
             elif isinstance(exclude_port, int):
                 exclude_port = [exclude_port]
-            
+
             # Add already allocated ports to exclude list
             exclude_port = exclude_port + list(_allocated_ports)
-            
+
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(("localhost", 0))  # Let OS choose a free port
@@ -1412,9 +1411,9 @@ class SingBoxProxy:
 
         # Release allocated ports
         with _port_allocation_lock:
-            if hasattr(self, 'http_port') and self.http_port:
+            if hasattr(self, "http_port") and self.http_port:
                 _allocated_ports.discard(self.http_port)
-            if hasattr(self, 'socks_port') and self.socks_port:
+            if hasattr(self, "socks_port") and self.socks_port:
                 _allocated_ports.discard(self.socks_port)
 
         # Reset process reference
@@ -1691,3 +1690,50 @@ class SingBoxProxy:
             self._safe_cleanup()
         except Exception:
             pass
+
+
+class SingBoxClient:
+    "HTTP client for SingBox"
+
+    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10):
+        self.client = client
+        self.proxy = client.proxy_for_requests if client else None
+        self.auto_retry = auto_retry
+        self.retry_times = retry_times
+        self.timeout = timeout
+        self.module = self._import_request_module()
+
+    def _import_request_module(self):
+        try:
+            import curl_cffi
+
+            return curl_cffi
+        except ImportError:
+            try:
+                import requests
+
+                return requests
+            except ImportError:
+                raise ImportError("Neither 'curl_cffi' nor 'requests' module is available. Please install one of them.")
+
+    def request(self, method: str, url: str, **kwargs):
+        "Make an HTTP request with retries"
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = self.timeout
+        if kwargs.get("proxies") is None:
+            kwargs["proxies"] = self.proxy
+
+        retries = 0
+        while retries <= self.retry_times:
+            try:
+                response = self.module.request(method=method, url=url, **kwargs)
+                response.raise_for_status()
+                return response
+            except Exception as e:
+                raise e
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
