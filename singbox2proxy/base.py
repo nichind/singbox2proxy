@@ -21,8 +21,13 @@ import sys
 from pathlib import Path
 
 
-# Disable all logging output
+# Logging, disabled output by default
 logging.disable(logging.CRITICAL)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 # Global registry to track all active processes
 _active_processes = weakref.WeakSet()
@@ -375,7 +380,7 @@ class SingBoxCore:
         return None
 
 
-core = SingBoxCore()
+default_core = SingBoxCore()
 
 
 def _safe_base64_decode(data: str) -> str:
@@ -404,6 +409,7 @@ class SingBoxProxy:
         config_file_path: os.PathLike | str | None = None,
         config_directory: os.PathLike | str | None = None,
         client: "SingBoxClient" = None,
+        core: "SingBoxCore" = None,
     ):
         start_time = time.time()
         """
@@ -452,6 +458,9 @@ class SingBoxProxy:
 
         # Register this instance for global cleanup
         _active_processes.add(self)
+
+        # set SingBoxCore
+        self.core = core or default_core
 
         if client is not False:
             self.client = client._set_parent(self) if isinstance(client, SingBoxClient) else SingBoxClient(self)
@@ -682,6 +691,7 @@ class SingBoxProxy:
                     "enabled": True,
                     "server_name": params.get("sni", params.get("host", host)),
                     "reality": {"enabled": True, "public_key": params.get("pbk", ""), "short_id": params.get("sid", "")},
+                    "utls": {"enabled": True, "fingerprint": "chrome"}
                 }
 
             return outbound
@@ -1305,7 +1315,7 @@ class SingBoxProxy:
                 config_path = self.create_config_file()
 
             # Prepare command and environment
-            cmd = [core.executable, "run", "-c", config_path]
+            cmd = [self.core.executable, "run", "-c", config_path]
 
             logging.debug(f"Starting sing-box with command: {' '.join(cmd)}")
 
@@ -1692,44 +1702,58 @@ class SingBoxProxy:
             pass
 
 
+def _import_request_module():
+    try:
+        import curl_cffi
+
+        return curl_cffi
+    except ImportError:
+        try:
+            import requests
+
+            return requests
+        except ImportError:
+            return None
+
+
+default_request_module = _import_request_module()
+
+
 class SingBoxClient:
     "HTTP client for SingBox"
 
-    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10):
+    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10, module=None):
         self.client = client
         self.proxy = client.proxy_for_requests if client else None
         self.auto_retry = auto_retry
         self.retry_times = retry_times
         self.timeout = timeout
-        self.module = self._import_request_module()
-
-    def _import_request_module(self):
-        try:
-            import curl_cffi
-
-            return curl_cffi
-        except ImportError:
-            try:
-                import requests
-
-                return requests
-            except ImportError:
-                raise ImportError("Neither 'curl_cffi' nor 'requests' module is available. Please install one of them.")
+        self.module = module or default_request_module
 
     def request(self, method: str, url: str, **kwargs):
         "Make an HTTP request with retries"
+        start_time = time.time()
+        if self.module is None:
+            raise ImportError("No HTTP request module available. Please install 'curl-cffi' or 'requests'.")
         if kwargs.get("timeout") is None:
             kwargs["timeout"] = self.timeout
         if kwargs.get("proxies") is None:
             kwargs["proxies"] = self.proxy
 
-        retries = 0
-        while retries <= self.retry_times:
+        retry_times = kwargs.pop("retries", self.retry_times if self.auto_retry else 0)
+        attempts = 0
+        while attempts <= retry_times:
             try:
                 response = self.module.request(method=method, url=url, **kwargs)
                 response.raise_for_status()
+                logging.debug(f"Request to {url} succeeded in {time.time() - start_time:.2f} seconds")
                 return response
             except Exception as e:
+                if attempts < retry_times:
+                    attempts += 1
+                    time.sleep(min(0.2 * attempts, 2))
+                    continue
+                logging.error(f"Request to {url} failed after {attempts} attempts: {str(e)} and {time.time() - start_time:.2f} seconds")
                 raise e
 
     def get(self, url, **kwargs):
@@ -1737,3 +1761,14 @@ class SingBoxClient:
 
     def post(self, url, **kwargs):
         return self.request("POST", url, **kwargs)
+
+    def head(self, url, **kwargs):
+        return self.request("HEAD", url, **kwargs)
+
+    def __del__(self):
+        "Ensure resources are cleaned up when the object is garbage collected."
+        if self.client:
+            try:
+                self.client.stop()
+            except Exception:
+                pass
