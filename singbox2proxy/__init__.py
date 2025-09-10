@@ -1,8 +1,7 @@
-from .base import SingBoxCore, SingBoxProxy
-from .base import logging as singbox_logging
+from .base import SingBoxCore, SingBoxProxy, enable_logging, disable_logging
 
 VERSION = "0.1.3"
 
 print(f"singbox2proxy version {VERSION}")
 
-__all__ = ["SingBoxCore", "SingBoxProxy", "VERSION", "singbox_logging"]
+__all__ = ["SingBoxCore", "SingBoxProxy", "VERSION", "enable_logging", "disable_logging"]

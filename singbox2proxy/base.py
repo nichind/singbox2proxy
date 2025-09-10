@@ -21,13 +21,27 @@ import sys
 from pathlib import Path
 
 
-# Logging, disabled output by default
-logging.disable(logging.CRITICAL)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+logger = logging.getLogger("singbox2proxy")
+logger.setLevel(logging.WARNING)
+
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s:%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(handler)
+
+
+logger.propagate = False
+
+
+def enable_logging(level=logging.DEBUG):
+    """Enable library logging at the specified level."""
+    logger.setLevel(level)
+
+
+def disable_logging():
+    """Disable library logging."""
+    logger.setLevel(logging.CRITICAL + 1)
+
 
 # Global registry to track all active processes
 _active_processes = weakref.WeakSet()
@@ -46,7 +60,7 @@ def _register_signal_handlers():
         return
 
     def cleanup_handler(signum, frame):
-        logging.info(f"Received signal {signum}, cleaning up sing-box processes...")
+        logger.info(f"Received signal {signum}, cleaning up sing-box processes...")
         _cleanup_all_processes()
         # Re-raise the signal for default handling
         signal.signal(signum, signal.SIG_DFL)
@@ -73,7 +87,7 @@ def _cleanup_all_processes():
                 if hasattr(process_ref, "_emergency_cleanup"):
                     process_ref._emergency_cleanup()
             except Exception as e:
-                logging.error(f"Error in emergency cleanup: {e}")
+                logger.error(f"Error in emergency cleanup: {e}")
 
 
 # Register signal handlers and atexit cleanup
@@ -85,7 +99,7 @@ class SingBoxCore:
     def __init__(self):
         start_time = time.time()
         self.executable = self._ensure_executable()
-        logging.debug(f"SingBoxCore initialized in {time.time() - start_time:.2f} seconds")
+        logger.debug(f"SingBoxCore initialized in {time.time() - start_time:.2f} seconds")
 
     def _ensure_executable(self) -> str:
         """Ensure that the sing-box executable is available.
@@ -107,23 +121,23 @@ class SingBoxCore:
 
                     result = subprocess.run([exe, "version"], **kwargs)
                     if result.returncode == 0 and "sing-box" in result.stdout.lower():
-                        logging.info(f"Found sing-box executable '{exe}': {result.stdout.strip()}")
+                        logger.info(f"Found sing-box executable '{exe}': {result.stdout.strip()}")
                         return True
                     else:
-                        logging.debug(
+                        logger.debug(
                             f"'{exe}' version returned non-zero exit code or unexpected output: {result.stdout.strip()} {result.stderr.strip()}"
                         )
                 except FileNotFoundError:
-                    logging.debug(f"'{exe}' command not found in PATH")
+                    logger.debug(f"'{exe}' command not found in PATH")
                     continue
                 except subprocess.TimeoutExpired:
-                    logging.warning(f"'{exe}' version command timed out")
+                    logger.warning(f"'{exe}' version command timed out")
                     continue
                 except Exception as e:
-                    logging.debug(f"Error checking '{exe}' executable: {e}")
+                    logger.debug(f"Error checking '{exe}' executable: {e}")
                     continue
 
-            logging.warning("sing-box command not found in PATH")
+            logger.warning("sing-box command not found in PATH")
             return False
 
         def _install_via_sh(
@@ -143,7 +157,7 @@ class SingBoxCore:
             Returns:
               - True on success, raises RuntimeError on failure.
             """
-            logging.info("Installing sing-box via upstream install script")
+            logger.info("Installing sing-box via upstream install script")
             if os.name == "nt":
                 return False
                 # raise NotImplementedError("Automatic install via install.sh is not supported on Windows")
@@ -178,20 +192,20 @@ class SingBoxCore:
                     if sudo_path:
                         cmd.insert(0, sudo_path)
                     else:
-                        logging.warning("Not running as root and sudo not found; installer may fail without privileges")
+                        logger.warning("Not running as root and sudo not found; installer may fail without privileges")
                 except Exception:
-                    logging.warning("Could not determine sudo availability; proceeding without sudo")
+                    logger.warning("Could not determine sudo availability; proceeding without sudo")
 
-            logging.info(f"Running installer: {' '.join(cmd)}")
+            logger.info(f"Running installer: {' '.join(cmd)}")
             try:
                 subprocess.run(cmd, input=script_bytes, check=True)
-                logging.info("sing-box installation completed successfully")
+                logger.info("sing-box installation completed successfully")
                 return True
             except subprocess.CalledProcessError as e:
-                logging.warning(f"sing-box installer failed with exit code {e.returncode}")
+                logger.warning(f"sing-box installer failed with exit code {e.returncode}")
                 return False
             except Exception as e:
-                logging.warning(f"Error running sing-box installer: {e}")
+                logger.warning(f"Error running sing-box installer: {e}")
                 return False
 
         def _install_via_package_manager() -> bool:
@@ -200,7 +214,7 @@ class SingBoxCore:
 
             Returns True on success.
             """
-            logging.info("Attempting installation via package manager")
+            logger.info("Attempting installation via package manager")
 
             cmds = []
 
@@ -267,11 +281,11 @@ class SingBoxCore:
                         cmds.append(["brew", "install", "sing-box"])
 
             except Exception as e:
-                logging.warning(f"Error preparing package manager commands: {e}")
+                logger.warning(f"Error preparing package manager commands: {e}")
                 return False
 
             if not cmds:
-                logging.warning("No known package manager found on this system")
+                logger.warning("No known package manager found on this system")
                 return False
 
             for cmd in cmds:
@@ -291,10 +305,10 @@ class SingBoxCore:
                     if sudo_path:
                         final_cmd.insert(0, sudo_path)
                     else:
-                        logging.info(f"Skipping command that requires root (sudo not found): {' '.join(cmd)}")
+                        logger.info(f"Skipping command that requires root (sudo not found): {' '.join(cmd)}")
                         continue
 
-                logging.info(f"Running package manager command: {' '.join(final_cmd)}")
+                logger.info(f"Running package manager command: {' '.join(final_cmd)}")
                 try:
                     proc = subprocess.run(final_cmd, check=False, capture_output=True, text=True, timeout=600)
                     proc_p = subprocess.Popen(
@@ -326,7 +340,7 @@ class SingBoxCore:
                     try:
                         proc_p.wait(timeout=600)
                     except subprocess.TimeoutExpired:
-                        logging.warning(f"Package manager command timeout, killing: {' '.join(final_cmd)}")
+                        logger.warning(f"Package manager command timeout, killing: {' '.join(final_cmd)}")
                         try:
                             proc_p.kill()
                         except Exception:
@@ -342,21 +356,21 @@ class SingBoxCore:
                     # Create a CompletedProcess-like object so downstream code expecting proc.returncode/stdout/stderr works
                     proc = subprocess.CompletedProcess(args=final_cmd, returncode=proc_p.returncode, stdout=stdout, stderr=stderr)
 
-                    logging.debug(f"Command stdout: {proc.stdout}")
-                    logging.debug(f"Command stderr: {proc.stderr}")
+                    logger.debug(f"Command stdout: {proc.stdout}")
+                    logger.debug(f"Command stderr: {proc.stderr}")
                     if proc.returncode == 0:
-                        logging.info(f"Package manager reported success: {' '.join(final_cmd)}")
+                        logger.info(f"Package manager reported success: {' '.join(final_cmd)}")
                         return True
                     else:
-                        logging.warning(f"Command failed ({proc.returncode}): {' '.join(final_cmd)}")
+                        logger.warning(f"Command failed ({proc.returncode}): {' '.join(final_cmd)}")
                 except FileNotFoundError:
-                    logging.debug(f"Command not found: {final_cmd[0]}")
+                    logger.debug(f"Command not found: {final_cmd[0]}")
                 except subprocess.TimeoutExpired:
-                    logging.warning(f"Command timed out: {' '.join(final_cmd)}")
+                    logger.warning(f"Command timed out: {' '.join(final_cmd)}")
                 except Exception as e:
-                    logging.warning(f"Error running command {' '.join(final_cmd)}: {e}")
+                    logger.warning(f"Error running command {' '.join(final_cmd)}: {e}")
 
-            logging.error("All package manager installation attempts failed")
+            logger.error("All package manager installation attempts failed")
             return False
 
         if _test_terminal():
@@ -367,16 +381,16 @@ class SingBoxCore:
                 if _test_terminal():
                     return "sing-box"
         except Exception as e:
-            logging.warning(f"Failed to install sing-box via install script: {e}")
+            logger.warning(f"Failed to install sing-box via install script: {e}")
 
         try:
             if _install_via_package_manager():
                 if _test_terminal():
                     return "sing-box"
         except Exception as e:
-            logging.warning(f"Failed to install sing-box via package manager: {e}")
+            logger.warning(f"Failed to install sing-box via package manager: {e}")
 
-        logging.warning("sing-box could not be installed automatically. Please install it manually.")
+        logger.warning("sing-box could not be installed automatically. Please install it manually.")
         return None
 
 
@@ -406,7 +420,7 @@ class SingBoxProxy:
         socks_port: int | None = None,
         chain_proxy: None = None,
         config_only: bool = False,
-        config_file_path: os.PathLike | str | None = None,
+        config_file: os.PathLike | str | None = None,
         config_directory: os.PathLike | str | None = None,
         client: "SingBoxClient" = None,
         core: "SingBoxCore" = None,
@@ -438,16 +452,17 @@ class SingBoxProxy:
         else:
             raise TypeError("config must be a path-like or a string (local path or URL)")
 
-        # Ports
+        # Ports & Configuration
         self.http_port = http_port or (self._pick_unused_port() if http_port is not False else None)
         self.socks_port = socks_port or (self._pick_unused_port(self.http_port) if socks_port is not False else None)
-        logging.debug(f"Ports selected in {time.time() - start_time:.2f} seconds")
+        logger.debug(f"Ports selected in {time.time() - start_time:.2f} seconds")
         self.config_only = config_only
         self.chain_proxy = chain_proxy
+        self.config_file = Path(config_file) if config_file else None
+        self.config_directory = Path(config_directory) if config_directory else None
 
         # Runtime state
         self.singbox_process = None
-        self.config_file_path = None
         self.running = False
         self._cleanup_lock = threading.RLock()
         self._process_terminated = threading.Event()
@@ -471,7 +486,7 @@ class SingBoxProxy:
         # Start SingBox if not in config_only mode
         if not config_only:
             self.start()
-        logging.debug(f"SingBoxProxy initialized in {time.time() - start_time:.2f} seconds")
+        logger.debug(f"SingBoxProxy initialized in {time.time() - start_time:.2f} seconds")
 
     def __repr__(self) -> str:
         pid = None
@@ -522,9 +537,15 @@ class SingBoxProxy:
         """Reads a stream line by line and appends to a collector."""
         try:
             for line in iter(stream.readline, ""):
-                collector.append(line)
+                if line:
+                    collector.append(line)
+                else:
+                    break
+        except (ValueError, OSError) as e:
+            # Stream was closed or process terminated
+            logger.debug(f"Stream read interrupted (process likely terminated): {e}")
         except Exception as e:
-            logging.debug(f"Error reading stream: {e}")
+            logger.debug(f"Error reading stream: {e}")
         finally:
             try:
                 stream.close()
@@ -561,14 +582,14 @@ class SingBoxProxy:
                         _allocated_ports.add(port)
                         return port
             except Exception as e:
-                logging.warning(f"Failed to get system-assigned port: {str(e)}")
+                logger.warning(f"Failed to get system-assigned port: {str(e)}")
 
             # If that fails, try a few random ports
             for _ in range(100):
                 port = random.randint(10000, 65000)
                 if port not in exclude_port and not self._is_port_in_use(port):
                     _allocated_ports.add(port)
-                    logging.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
+                    logger.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
                     return port
 
             raise RuntimeError("Could not find an unused port")
@@ -624,7 +645,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse VMess link: {str(e)}")
+            logger.error(f"Failed to parse VMess link: {str(e)}")
             raise ValueError(f"Invalid VMess format: {str(e)}")
 
     def _parse_vless_link(self, link: str) -> dict:
@@ -691,12 +712,12 @@ class SingBoxProxy:
                     "enabled": True,
                     "server_name": params.get("sni", params.get("host", host)),
                     "reality": {"enabled": True, "public_key": params.get("pbk", ""), "short_id": params.get("sid", "")},
-                    "utls": {"enabled": True, "fingerprint": "chrome"}
+                    "utls": {"enabled": True, "fingerprint": "chrome"},
                 }
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse VLESS link: {str(e)}")
+            logger.error(f"Failed to parse VLESS link: {str(e)}")
             raise ValueError(f"Invalid VLESS format: {str(e)}")
 
     def _parse_shadowsocks_link(self, link: str) -> dict:
@@ -775,7 +796,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse Shadowsocks link: {str(e)}")
+            logger.error(f"Failed to parse Shadowsocks link: {str(e)}")
             raise ValueError(f"Invalid Shadowsocks format: {str(e)}")
 
     def _parse_trojan_link(self, link: str) -> dict:
@@ -819,7 +840,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse Trojan link: {str(e)}")
+            logger.error(f"Failed to parse Trojan link: {str(e)}")
             raise ValueError(f"Invalid Trojan format: {str(e)}")
 
     def _parse_hysteria2_link(self, link: str) -> dict:
@@ -858,7 +879,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse Hysteria2 link: {str(e)}")
+            logger.error(f"Failed to parse Hysteria2 link: {str(e)}")
             raise ValueError(f"Invalid Hysteria2 format: {str(e)}")
 
     def _parse_tuic_link(self, link: str) -> dict:
@@ -902,7 +923,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse TUIC link: {str(e)}")
+            logger.error(f"Failed to parse TUIC link: {str(e)}")
             raise ValueError(f"Invalid TUIC format: {str(e)}")
 
     def _parse_wireguard_link(self, link: str) -> dict:
@@ -952,7 +973,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse WireGuard link: {str(e)}")
+            logger.error(f"Failed to parse WireGuard link: {str(e)}")
             raise ValueError(f"Invalid WireGuard format: {str(e)}")
 
     def _parse_ssh_link(self, link: str) -> dict:
@@ -984,7 +1005,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse SSH link: {str(e)}")
+            logger.error(f"Failed to parse SSH link: {str(e)}")
             raise ValueError(f"Invalid SSH format: {str(e)}")
 
     def _parse_http_link(self, link: str) -> dict:
@@ -1023,7 +1044,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse HTTP link: {str(e)}")
+            logger.error(f"Failed to parse HTTP link: {str(e)}")
             raise ValueError(f"Invalid HTTP format: {str(e)}")
 
     def _parse_socks_link(self, link: str) -> dict:
@@ -1060,7 +1081,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse SOCKS link: {str(e)}")
+            logger.error(f"Failed to parse SOCKS link: {str(e)}")
             raise ValueError(f"Invalid SOCKS format: {str(e)}")
 
     def _parse_hysteria_link(self, link: str) -> dict:
@@ -1104,7 +1125,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse Hysteria link: {str(e)}")
+            logger.error(f"Failed to parse Hysteria link: {str(e)}")
             raise ValueError(f"Invalid Hysteria format: {str(e)}")
 
     def _parse_naiveproxy_link(self, link: str) -> dict:
@@ -1138,7 +1159,7 @@ class SingBoxProxy:
 
             return outbound
         except Exception as e:
-            logging.error(f"Failed to parse NaiveProxy link: {str(e)}")
+            logger.error(f"Failed to parse NaiveProxy link: {str(e)}")
             raise ValueError(f"Invalid NaiveProxy format: {str(e)}")
 
     def generate_config(self, chain_proxy=None):
@@ -1206,7 +1227,7 @@ class SingBoxProxy:
 
             return config
         except Exception as e:
-            logging.error(f"Error generating config: {str(e)}")
+            logger.error(f"Error generating config: {str(e)}")
             raise
 
     @property
@@ -1217,7 +1238,7 @@ class SingBoxProxy:
                 with open(self.config_file_path, "r") as f:
                     return json.load(f)
             except Exception as e:
-                logging.error(f"Failed to read config file: {str(e)}")
+                logger.error(f"Failed to read config file: {str(e)}")
                 raise
         else:
             raise FileNotFoundError("Configuration file not found. Please start the proxy first.")
@@ -1227,18 +1248,24 @@ class SingBoxProxy:
         if not content:
             config = self.generate_config(self.chain_proxy)
 
+        if self.config_file:
+            if not os.path.exists(self.config_file):
+                raise FileNotFoundError(f"Specified config file does not exist: {self.config_file}")
+            with open(self.config_file, "r") as f:
+                config = json.load(f)
+
         if isinstance(content, str):
             config = json.loads(content)
 
         # Log the generated config for debugging
-        logging.debug(f"Generated sing-box config: {json.dumps(config, indent=2)}")
+        logger.debug(f"Generated sing-box config: {json.dumps(config, indent=2)}")
 
         # Create a temporary file for the configuration
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_file:
             temp_file_path = temp_file.name
             json_config = json.dumps(config, indent=2)
             temp_file.write(json_config.encode("utf-8"))
-            logging.debug(f"Wrote config to {temp_file_path}")
+            logger.debug(f"Wrote config to {temp_file_path}")
 
         self.config_file_path = temp_file_path
         return temp_file_path
@@ -1265,17 +1292,17 @@ class SingBoxProxy:
                 error_msg = (
                     f"sing-box process terminated early. Exit code: {self.singbox_process.returncode}\nStdout: {stdout}\nStderr: {stderr}"
                 )
-                logging.error(error_msg)
+                logger.error(error_msg)
                 raise RuntimeError(error_msg)
 
             try:
                 if is_port_open(self.socks_port) or is_port_open(self.http_port):
-                    logging.debug("sing-box proxy is ready and accepting connections")
+                    logger.debug("sing-box proxy is ready and accepting connections")
                     return True
 
             except Exception as e:
                 last_error = str(e)
-                logging.debug(f"Proxy not ready yet: {last_error}")
+                logger.debug(f"Proxy not ready yet: {last_error}")
 
             time.sleep(0.005)
 
@@ -1298,14 +1325,14 @@ class SingBoxProxy:
             except Exception as e:
                 error_msg += f"\nCould not read process output: {e}"
 
-        logging.error(error_msg)
+        logger.error(error_msg)
         raise TimeoutError(error_msg)
 
     def start(self):
         start_time = time.time()
         """Start the sing-box process with the generated configuration."""
         if self.running:
-            logging.warning("sing-box process is already running")
+            logger.warning("sing-box process is already running")
             return
 
         try:
@@ -1317,7 +1344,7 @@ class SingBoxProxy:
             # Prepare command and environment
             cmd = [self.core.executable, "run", "-c", config_path]
 
-            logging.debug(f"Starting sing-box with command: {' '.join(cmd)}")
+            logger.debug(f"Starting sing-box with command: {' '.join(cmd)}")
 
             # Set up process creation flags for better process management
             kwargs = {
@@ -1350,13 +1377,13 @@ class SingBoxProxy:
             self._stdout_thread.start()
             self._stderr_thread.start()
 
-            logging.debug(f"sing-box process started with PID {self.singbox_process.pid} in {time.time() - start_time:.2f} seconds")
+            logger.debug(f"sing-box process started with PID {self.singbox_process.pid} in {time.time() - start_time:.2f} seconds")
 
             # Wait for the proxy to become ready
             try:
                 self._check_proxy_ready(timeout=15)
                 self.running = True
-                logging.info(f"sing-box started successfully on SOCKS port {self.socks_port}, HTTP port {self.http_port}")
+                logger.info(f"sing-box started successfully on SOCKS port {self.socks_port}, HTTP port {self.http_port}")
             except Exception:
                 # If checking fails, terminate the process and raise the exception
                 self._terminate_process(timeout=1)
@@ -1366,14 +1393,32 @@ class SingBoxProxy:
                     self._stderr_thread.join(timeout=1)
                     stdout = self.stdout
                     stderr = self.stderr
-                    logging.error(f"sing-box output after failed start: Stdout: {stdout}, Stderr: {stderr}")
+                    logger.error(f"sing-box output after failed start: Stdout: {stdout}, Stderr: {stderr}")
                 except Exception:
                     pass
                 raise
         except Exception as e:
-            logging.error(f"Error starting sing-box: {str(e)}")
+            logger.error(f"Error starting sing-box: {str(e)}")
             self._safe_cleanup()
             raise
+
+    def _join_reader_threads(self, timeout=2):
+        """Wait for reader threads to finish."""
+        if self._stdout_thread and self._stdout_thread.is_alive():
+            try:
+                self._stdout_thread.join(timeout=timeout)
+                if self._stdout_thread.is_alive():
+                    logger.warning("stdout reader thread did not finish within timeout")
+            except Exception as e:
+                logger.debug(f"Error joining stdout thread: {e}")
+
+        if self._stderr_thread and self._stderr_thread.is_alive():
+            try:
+                self._stderr_thread.join(timeout=timeout)
+                if self._stderr_thread.is_alive():
+                    logger.warning("stderr reader thread did not finish within timeout")
+            except Exception as e:
+                logger.debug(f"Error joining stderr thread: {e}")
 
     def stop(self):
         """Stop the sing-box process and clean up resources."""
@@ -1386,16 +1431,18 @@ class SingBoxProxy:
                 if self.singbox_process is not None:
                     success = self._terminate_process(timeout=1)
                     if not success:
-                        logging.warning("sing-box process may not have terminated cleanly")
+                        logger.warning("sing-box process may not have terminated cleanly")
+
+                self._join_reader_threads()
 
                 self.running = False
-                logging.info("sing-box process stopped")
+                logger.info("sing-box process stopped")
 
             except Exception as e:
-                logging.error(f"Error stopping sing-box: {str(e)}")
+                logger.error(f"Error stopping sing-box: {str(e)}")
             finally:
                 self._cleanup_internal()
-        logging.debug(f"Sing-box stopped in {time.time() - start_time:.2f} seconds")
+        logger.debug(f"Sing-box stopped in {time.time() - start_time:.2f} seconds")
 
     def cleanup(self):
         """Clean up temporary files and resources."""
@@ -1413,9 +1460,9 @@ class SingBoxProxy:
             try:
                 if os.path.exists(self.config_file_path):
                     os.unlink(self.config_file_path)
-                    logging.debug(f"Removed config file: {self.config_file_path}")
+                    logger.debug(f"Removed config file: {self.config_file_path}")
             except Exception as e:
-                logging.warning(f"Failed to remove config file {self.config_file_path}: {str(e)}")
+                logger.warning(f"Failed to remove config file {self.config_file_path}: {str(e)}")
             finally:
                 self.config_file_path = None
 
@@ -1425,6 +1472,19 @@ class SingBoxProxy:
                 _allocated_ports.discard(self.http_port)
             if hasattr(self, "socks_port") and self.socks_port:
                 _allocated_ports.discard(self.socks_port)
+
+        # Close std stream threads
+        if self._stdout_thread and self._stdout_thread.is_alive():
+            try:
+                self._stdout_thread.join(timeout=0.5)
+            except Exception as e:
+                logger.debug(f"Error joining stdout thread during cleanup: {e}")
+
+        if self._stderr_thread and self._stderr_thread.is_alive():
+            try:
+                self._stderr_thread.join(timeout=0.5)
+            except Exception as e:
+                logger.debug(f"Error joining stderr thread during cleanup: {e}")
 
         # Reset process reference
         self.singbox_process = None
@@ -1454,7 +1514,7 @@ class SingBoxProxy:
                 return True
 
             pid = self.singbox_process.pid
-            logging.debug(f"Terminating sing-box process (PID: {pid})")
+            logger.debug(f"Terminating sing-box process (PID: {pid})")
 
             if os.name == "nt":
                 return self._terminate_windows_process(pid, timeout)
@@ -1462,7 +1522,7 @@ class SingBoxProxy:
                 return self._terminate_unix_process(pid, timeout)
 
         except Exception as e:
-            logging.error(f"Error terminating sing-box process: {e}")
+            logger.error(f"Error terminating sing-box process: {e}")
             return False
 
     def _terminate_windows_process(self, pid, timeout):
@@ -1487,7 +1547,7 @@ class SingBoxProxy:
                     return True
                 except psutil.TimeoutExpired:
                     # Force kill if timeout
-                    logging.warning("Process didn't terminate gracefully, force killing")
+                    logger.warning("Process didn't terminate gracefully, force killing")
                     for child in children:
                         try:
                             child.kill()
@@ -1546,7 +1606,7 @@ class SingBoxProxy:
                     return True
                 except psutil.TimeoutExpired:
                     # Force kill if timeout
-                    logging.warning("Process didn't terminate gracefully, sending SIGKILL")
+                    logger.warning("Process didn't terminate gracefully, sending SIGKILL")
                     for child in children:
                         try:
                             child.kill()
@@ -1648,6 +1708,14 @@ class SingBoxProxy:
                             self.singbox_process.kill()
                         except Exception:
                             pass
+
+            try:
+                if self._stdout_thread and self._stdout_thread.is_alive():
+                    self._stdout_thread.join(timeout=0.01)
+                if self._stderr_thread and self._stderr_thread.is_alive():
+                    self._stderr_thread.join(timeout=0.01)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1673,7 +1741,7 @@ class SingBoxProxy:
                 process = psutil.Process(self.singbox_process.pid)
                 return process.memory_info().rss
             except Exception as exc:
-                logging.error(f"Error getting memory usage: {exc}")
+                logger.error(f"Error getting memory usage: {exc}")
         return 0
 
     @property
@@ -1689,8 +1757,21 @@ class SingBoxProxy:
                 process = psutil.Process(self.singbox_process.pid)
                 return process.cpu_percent(interval=1)
             except Exception as exc:
-                logging.error(f"Error getting CPU usage: {exc}")
+                logger.error(f"Error getting CPU usage: {exc}")
         return 0
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        try:
+            self.stop()
+            self.cleanup()
+        except Exception as e:
+            logger.error(f"Error during context manager cleanup: {e}")
+        return False
 
     def __del__(self):
         """Ensure resources are cleaned up when the object is garbage collected."""
@@ -1746,14 +1827,14 @@ class SingBoxClient:
             try:
                 response = self.module.request(method=method, url=url, **kwargs)
                 response.raise_for_status()
-                logging.debug(f"Request to {url} succeeded in {time.time() - start_time:.2f} seconds")
+                logger.debug(f"Request to {url} succeeded in {time.time() - start_time:.2f} seconds")
                 return response
             except Exception as e:
                 if attempts < retry_times:
                     attempts += 1
                     time.sleep(min(0.2 * attempts, 2))
                     continue
-                logging.error(f"Request to {url} failed after {attempts} attempts: {str(e)} and {time.time() - start_time:.2f} seconds")
+                logger.error(f"Request to {url} failed after {attempts} attempts: {str(e)} and {time.time() - start_time:.2f} seconds")
                 raise e
 
     def get(self, url, **kwargs):
