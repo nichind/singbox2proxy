@@ -36,6 +36,10 @@ keywords = [
 ]
 dependencies = ["psutil", "pysocks"]
 
+[project.scripts]
+singbox2proxy = "singbox2proxy.__main__:main"
+sb2p = "singbox2proxy.__main__:main"
+
 [project.urls]
 "Homepage" = "https://github.com/nichind/singbox2proxy"
 "Issues" = "https://github.com/nichind/singbox2proxy/issues"

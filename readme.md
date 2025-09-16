@@ -85,75 +85,12 @@ async def main():
             print(response.status, await response.text())  # 200, {"ip":"..."}
 ```
 
-### CLI
-
-Start a proxy server from the command line:
-
-```shell
-singbox2proxy "vless://..."
-```
-
-#### Basic Commands
-
-Start a single proxy:
-
-```shell
-singbox2proxy "vmess://eyJ2IjoiMiIsInBzIjoidGVzdCIsImFkZCI6IjEuMS4xLjEiLCJwb3J0IjoiNDQzIiwiaWQiOiI3YzI4ZmYzNC1mYTcxLTQ4ZjYtYWFjMS0xOGE4ODgzYWE2YzAiLCJhaWQiOiIwIiwibmV0IjoidGNwIiwidHlwZSI6Im5vbmUiLCJob3N0IjoiIiwicGF0aCI6IiIsInRscyI6InRscyJ9"
-```
-
-Specify custom ports:
-
-```shell
-singbox2proxy "ss://..." --http-port 8080 --socks-port 1080
-```
-
-Test the proxy connection:
-
-```shell
-singbox2proxy "trojan://..." --test
-```
-
-#### Proxy Chaining
-
-Chain multiple proxies (traffic flows: you -> proxy1 -> proxy2 -> target):
-
-```shell
-singbox2proxy "vmess://..." "vless://..." "hy2://..." --chain
-```
-
-The first URL becomes the entry point, and the last URL connects to the target server.
-
-#### Configuration Management
-
-Generate configuration without starting:
-
-```shell
-singbox2proxy "vless://..." --config-only
-```
-
-Save configuration to file:
-
-```shell
-singbox2proxy "vmess://..." --output-config config.json
-```
-
-#### Logging Options
-
-Enable verbose logging:
-
-```shell
-singbox2proxy "ss://..." --verbose
-```
-
-Disable all logging:
-
-```shell
-singbox2proxy "hy2://..." --quiet
-```
-
-### Chaining
+#### Chaining
 
 Chained proxies allow you to route your traffic through multiple proxy servers if you'll ever need more privacy or easy restriction bypass. You can chain multiple proxies together by specifying a `chain_proxy` with a gate `SingBoxProxy` instance when creating a new `SingBoxProxy`.
+
+> [!NOTE]
+> See what protocols can be used as middleman proxies at [supported protocols](#supported-protocols)
 
 ```python
 from singbox2proxy import SingBoxProxy
@@ -164,6 +101,72 @@ proxy2 = SingBoxProxy("vless://...", chain_proxy=proxy1)
 response = proxy2.request("GET", "https://api.ipify.org?format=json")
 print(response.status_code, response.text)  # 200, {"ip": "<proxy2's IP>"}
 # Here, requests made through `proxy2` will first go through `proxy1`, then proxy1 will forward the request to proxy2, and finally proxy2 will send the request to the target server.
+```
+
+### CLI
+
+> [!NOTE]
+> If the `singbox2proxy` or `sb2p` command isn't working in your terminal, use `python -m singbox2proxy <command>`, `uv run -m singbox2proxy <command>`, etc. instead.
+
+#### Basic Commands
+
+Start a single proxy:
+
+```shell
+sb2p "vmess://eyJ2IjoiMiIsInBzIj..."
+```
+
+Specify custom ports:
+
+```shell
+sb2p "ss://..." --http-port 8080 --socks-port False  # Socks disabled
+```
+
+Test the proxy connection:
+
+```shell
+sb2p "trojan://..." --test
+```
+
+#### Proxy Chaining
+
+Chain multiple proxies (traffic flows: you -> proxy1 -> proxy2 -> target):
+
+```shell
+sb2p "vmess://..." "vless://..." "hy2://..." --chain
+```
+
+> [!NOTE]
+> See what protocols can be used as middleman proxies at [supported protocols](#supported-protocols)
+
+The first URL becomes the entry point, and the last URL connects to the target server.
+
+#### Configuration Management
+
+Generate configuration without starting:
+
+```shell
+sb2p "vless://..." --config-only
+```
+
+Save configuration to file:
+
+```shell
+sb2p "vmess://..." --output-config config.json
+```
+
+#### Logging Options
+
+Enable verbose logging:
+
+```shell
+sb2p "ss://..." --verbose
+```
+
+Disable all logging:
+
+```shell
+sb2p "hy2://..." --quiet
 ```
 
 ### Discaimer
