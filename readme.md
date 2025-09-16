@@ -6,6 +6,25 @@ singbox2proxy is basically a fork of [v2ray2proxy](https://github.com/nichind/v2
 
  [![Pip module installs total downloads](https://img.shields.io/pypi/dm/singbox2proxy.svg)](https://pypi.org/project/singbox2proxy/)[![Run Tests](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml) [![Upload Python Package to PyPI when a Release is Created](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml)
 
+#### Supported Protocols
+
+This module supports these sing-box protocols:
+
+- VMess (`vmess://`)
+- VLESS (`vless://`)
+- Shadowsocks (`ss://`)
+- Trojan (`trojan://`)
+- Hysteria2* (`hy2://`, `hysteria2://`)
+- Hysteria* (`hysteria://`)
+- TUIC* (`tuic://`)
+- WireGuard (`wg://`)
+- SSH (`ssh://`)
+- HTTP/HTTPS (`http://`, `https://`)
+- SOCKS (`socks://`, `socks4://`, `socks5://`)
+- NaiveProxy* (`naive+https://`)
+
+*: Chaining as a middle proxy not supported, according to the [sing-box docs](https://sing-box.sagernet.org/configuration/inbound/)
+
 ### Installation
 
 with pip
@@ -28,7 +47,7 @@ cd singbox2proxy
 pip install -e .
 ```
 
-### Example usage
+### Python Usage
 
 Using built-in [curl-cffi](https://pypi.org/project/curl-cffi/) or [requests](https://pypi.org/project/requests/) client
 
@@ -64,6 +83,72 @@ async def main():
     async with aiohttp.ClientSession(proxy=proxy.socks5_proxy_url or proxy.http_proxy_url) as session:
         async with session.get("https://api.ipify.org?format=json") as response:
             print(response.status, await response.text())  # 200, {"ip":"..."}
+```
+
+### CLI
+
+Start a proxy server from the command line:
+
+```shell
+singbox2proxy "vless://..."
+```
+
+#### Basic Commands
+
+Start a single proxy:
+
+```shell
+singbox2proxy "vmess://eyJ2IjoiMiIsInBzIjoidGVzdCIsImFkZCI6IjEuMS4xLjEiLCJwb3J0IjoiNDQzIiwiaWQiOiI3YzI4ZmYzNC1mYTcxLTQ4ZjYtYWFjMS0xOGE4ODgzYWE2YzAiLCJhaWQiOiIwIiwibmV0IjoidGNwIiwidHlwZSI6Im5vbmUiLCJob3N0IjoiIiwicGF0aCI6IiIsInRscyI6InRscyJ9"
+```
+
+Specify custom ports:
+
+```shell
+singbox2proxy "ss://..." --http-port 8080 --socks-port 1080
+```
+
+Test the proxy connection:
+
+```shell
+singbox2proxy "trojan://..." --test
+```
+
+#### Proxy Chaining
+
+Chain multiple proxies (traffic flows: you -> proxy1 -> proxy2 -> target):
+
+```shell
+singbox2proxy "vmess://..." "vless://..." "hy2://..." --chain
+```
+
+The first URL becomes the entry point, and the last URL connects to the target server.
+
+#### Configuration Management
+
+Generate configuration without starting:
+
+```shell
+singbox2proxy "vless://..." --config-only
+```
+
+Save configuration to file:
+
+```shell
+singbox2proxy "vmess://..." --output-config config.json
+```
+
+#### Logging Options
+
+Enable verbose logging:
+
+```shell
+singbox2proxy "ss://..." --verbose
+```
+
+Disable all logging:
+
+```shell
+singbox2proxy "hy2://..." --quiet
 ```
 
 ### Chaining

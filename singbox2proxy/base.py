@@ -1233,9 +1233,9 @@ class SingBoxProxy:
     @property
     def config(self) -> dict:
         """Return the current sing-box configuration as a dictionary."""
-        if self.config_file_path and os.path.exists(self.config_file_path):
+        if self.config_file and os.path.exists(self.config_file):
             try:
-                with open(self.config_file_path, "r") as f:
+                with open(self.config_file, "r") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to read config file: {str(e)}")
@@ -1267,7 +1267,7 @@ class SingBoxProxy:
             temp_file.write(json_config.encode("utf-8"))
             logger.debug(f"Wrote config to {temp_file_path}")
 
-        self.config_file_path = temp_file_path
+        self.config_file = temp_file_path
         return temp_file_path
 
     def _check_proxy_ready(self, timeout=15):
@@ -1456,15 +1456,15 @@ class SingBoxProxy:
     def _cleanup_internal(self):
         """Internal cleanup method - should only be called while holding the lock."""
         # Clean up temporary files
-        if self.config_file_path:
+        if self.config_file:
             try:
-                if os.path.exists(self.config_file_path):
-                    os.unlink(self.config_file_path)
-                    logger.debug(f"Removed config file: {self.config_file_path}")
+                if os.path.exists(self.config_file):
+                    os.unlink(self.config_file)
+                    logger.debug(f"Removed config file: {self.config_file}")
             except Exception as e:
-                logger.warning(f"Failed to remove config file {self.config_file_path}: {str(e)}")
+                logger.warning(f"Failed to remove config file {self.config_file}: {str(e)}")
             finally:
-                self.config_file_path = None
+                self.config_file = None
 
         # Release allocated ports
         with _port_allocation_lock:

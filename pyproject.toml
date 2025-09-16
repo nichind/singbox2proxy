@@ -34,11 +34,11 @@ keywords = [
     "python",
     "cli"
 ]
-dependencies = ["psutil"]
+dependencies = ["psutil", "pysocks"]
 
 [project.urls]
-"Homepage" = "https://github.com/nichind/sing-box2proxy"
-"Issues" = "https://github.com/nichind/sing-box2proxy/issues"
+"Homepage" = "https://github.com/nichind/singbox2proxy"
+"Issues" = "https://github.com/nichind/singbox2proxy/issues"
 
 [tool.setuptools]
 packages = {find = {}}
