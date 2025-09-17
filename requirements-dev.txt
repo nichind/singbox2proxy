@@ -1,7 +1,7 @@
-aiohttp
-aiohttp-socks
-pysocks
-requests
-pytest
-pytest-asyncio
-curl-cffi
+aiohttp==3.12.15
+aiohttp-socks==0.10.1
+pysocks==1.7.1
+requests==2.32.5
+pytest==8.4.2
+pytest-asyncio==1.2.0
+curl-cffi==0.13.0
