@@ -96,9 +96,13 @@ atexit.register(_cleanup_all_processes)
 
 
 class SingBoxCore:
-    def __init__(self):
+    def __init__(self, executable: os.PathLike = None):
         start_time = time.time()
-        self.executable = self._ensure_executable()
+        if executable and not os.path.exists(executable):
+            raise FileNotFoundError(f"Custom set sing-box executable not found: {executable}")
+        if executable:
+            logger.info(f"Using custom sing-box executable: {executable}")
+        self.executable = executable or self._ensure_executable()
         logger.debug(f"SingBoxCore initialized in {time.time() - start_time:.2f} seconds")
 
     def _ensure_executable(self) -> str:
@@ -393,6 +397,33 @@ class SingBoxCore:
         logger.warning("sing-box could not be installed automatically. Please install it manually.")
         return None
 
+    def _version(self):
+        if not self.executable:
+            return None
+
+        try:
+            kwargs = {"capture_output": True, "text": True, "timeout": 1}
+            if os.name == "nt":
+                kwargs["shell"] = True
+
+            result = subprocess.run([self.executable, "version"], **kwargs)
+            if result.returncode == 0 and "sing-box" in result.stdout.lower():
+                for line in result.stdout.splitlines():
+                    if "version" in line.lower():
+                        return line.strip().split("version")[-1].strip()
+                return result.stdout.strip()
+            else:
+                logger.warning(f"Failed to get sing-box version: {result.stdout.strip()} {result.stderr.strip()}")
+                return None
+        except Exception as e:
+            logger.warning(f"Error getting sing-box version: {e}")
+            return None
+
+    @property
+    def version(self):
+        """Get the sing-box executable version."""
+        return self._version()
+
 
 default_core = SingBoxCore()
 
@@ -522,6 +553,10 @@ class SingBoxProxy:
             "http": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
             "https": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
         }
+
+    @property
+    def proxies(self):
+        return self.proxy_for_requests
 
     @property
     def stdout(self) -> str:
@@ -1202,13 +1237,22 @@ class SingBoxProxy:
 
             if chain_proxy:
                 # Add chain proxy outbound
-                chain_outbound = {
-                    "type": "socks",
-                    "tag": "chain-proxy",
-                    "server": "127.0.0.1",
-                    "server_port": chain_proxy.socks_port,
-                    "version": "5",
-                }
+                chain_outbound = (
+                    {
+                        "type": "socks",
+                        "tag": "chain-proxy",
+                        "server": "127.0.0.1",
+                        "server_port": chain_proxy.socks_port,
+                        "version": "5",
+                    }
+                    if chain_proxy.socks_port
+                    else {
+                        "type": "http",
+                        "tag": "chain-proxy",
+                        "server": "127.0.0.1",
+                        "server_port": chain_proxy.http_port,
+                    }
+                )
                 outbounds.append(chain_outbound)
 
                 # Configure main proxy to use chain proxy
@@ -1218,12 +1262,18 @@ class SingBoxProxy:
 
             # Create a basic sing-box configuration with SOCKS and HTTP inbounds
             config = {
-                "inbounds": [
-                    {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": self.socks_port, "users": []},
-                    {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": self.http_port, "users": []},
-                ],
+                "inbounds": [],
                 "outbounds": outbounds,
             }
+
+            if self.socks_port:
+                config["inbounds"] += [
+                    {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": self.socks_port, "users": []}
+                ]
+            if self.http_port:
+                config["inbounds"] += [
+                    {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": self.http_port, "users": []}
+                ]
 
             return config
         except Exception as e:
@@ -1285,8 +1335,7 @@ class SingBoxProxy:
         while time.time() - start_time < timeout:
             # First check if process is still running
             if self.singbox_process.poll() is not None:
-                # Wait a moment for reader threads to catch up
-                time.sleep(0.1)
+                time.sleep(0.001)
                 stdout = self.stdout
                 stderr = self.stderr
                 error_msg = (
@@ -1304,7 +1353,7 @@ class SingBoxProxy:
                 last_error = str(e)
                 logger.debug(f"Proxy not ready yet: {last_error}")
 
-            time.sleep(0.005)
+            time.sleep(0.001)
 
         # If we get here, the proxy didn't become ready in time
         if self.singbox_process.poll() is not None:
@@ -1566,7 +1615,7 @@ class SingBoxProxy:
             # Fallback to subprocess
             try:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False, capture_output=True, timeout=timeout)
-                time.sleep(0.01)
+                time.sleep(0.001)
                 if self.singbox_process.poll() is not None:
                     self._process_terminated.set()
                     return True
@@ -1637,7 +1686,7 @@ class SingBoxProxy:
                             if self.singbox_process.poll() is not None:
                                 self._process_terminated.set()
                                 return True
-                            time.sleep(0.005)
+                            time.sleep(0.001)
 
                         # Force kill if timeout
                         os.killpg(os.getpgid(pid), signal.SIGKILL)
@@ -1832,7 +1881,7 @@ class SingBoxClient:
             except Exception as e:
                 if attempts < retry_times:
                     attempts += 1
-                    time.sleep(min(0.2 * attempts, 2))
+                    time.sleep(min(0.2 * attempts, 1))
                     continue
                 logger.error(f"Request to {url} failed after {attempts} attempts: {str(e)} and {time.time() - start_time:.2f} seconds")
                 raise e
