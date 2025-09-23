@@ -1403,10 +1403,10 @@ class SingBoxProxy:
                 "universal_newlines": True,
             }
 
-            if os.name == "nt":  # Windows
+            if os.name == "nt":
                 kwargs["shell"] = True
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:  # Unix-like systems
+            else:
                 kwargs["preexec_fn"] = os.setsid  # Create new process group
 
             # Start sing-box process
@@ -1415,27 +1415,74 @@ class SingBoxProxy:
 
             # Start a thread for reading stdout and stderr streams
             def _monitor_streams():
-                sel = selectors.DefaultSelector()
-                sel.register(self.singbox_process.stdout, selectors.EVENT_READ, (self._stdout_lines, "stdout"))
-                sel.register(self.singbox_process.stderr, selectors.EVENT_READ, (self._stderr_lines, "stderr"))
+                if os.name == "nt":
+                    def _read_stdout():
+                        try:
+                            for line in iter(self.singbox_process.stdout.readline, ''):
+                                if line:
+                                    self._stdout_lines.append(line)
+                                else:
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Error reading stdout stream: {e}")
+                        finally:
+                            try:
+                                self.singbox_process.stdout.close()
+                            except Exception:
+                                pass
 
-                while self.singbox_process.poll() is None:
-                    try:
-                        for key, _ in sel.select(timeout=0.1):
-                            stream = key.fileobj
-                            collector, name = key.data
-                            line = stream.readline()
-                            if line:
-                                collector.append(line)
-                            else:
-                                sel.unregister(stream)
-                        if not sel.get_map():
+                    def _read_stderr():
+                        try:
+                            for line in iter(self.singbox_process.stderr.readline, ''):
+                                if line:
+                                    self._stderr_lines.append(line)
+                                else:
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Error reading stderr stream: {e}")
+                        finally:
+                            try:
+                                self.singbox_process.stderr.close()
+                            except Exception:
+                                pass
+
+                    # Create and start threads
+                    stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
+                    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+                    
+                    stdout_thread.start()
+                    stderr_thread.start()
+                    
+                    # Wait for process to complete or threads to finish
+                    while self.singbox_process.poll() is None:
+                        time.sleep(0.1)
+                    
+                    # Give threads a moment to finish reading remaining data
+                    stdout_thread.join(timeout=1.0)
+                    stderr_thread.join(timeout=1.0)
+                
+                else:
+                    sel = selectors.DefaultSelector()
+                    sel.register(self.singbox_process.stdout, selectors.EVENT_READ, (self._stdout_lines, "stdout"))
+                    sel.register(self.singbox_process.stderr, selectors.EVENT_READ, (self._stderr_lines, "stderr"))
+
+                    while self.singbox_process.poll() is None:
+                        try:
+                            for key, _ in sel.select(timeout=0.1):
+                                stream = key.fileobj
+                                collector, name = key.data
+                                line = stream.readline()
+                                if line:
+                                    collector.append(line)
+                                else:
+                                    sel.unregister(stream)
+                            if not sel.get_map():
+                                break
+                        except Exception as e:
+                            logger.debug(f"Error reading stream: {e}")
                             break
-                    except Exception as e:
-                        logger.debug(f"Error reading from {name} stream: {e}")
-                        break
 
-                sel.close()
+                    sel.close()
 
             self._stream_thread = threading.Thread(
                 target=_monitor_streams,
