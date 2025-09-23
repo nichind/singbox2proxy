@@ -18,6 +18,7 @@ import weakref
 import psutil
 import shutil
 import sys
+import selectors
 from pathlib import Path
 
 
@@ -1412,19 +1413,35 @@ class SingBoxProxy:
             self.singbox_process = subprocess.Popen(cmd, **kwargs)
             self._process_terminated.clear()
 
-            # Start threads to capture stdout and stderr
-            self._stdout_thread = threading.Thread(
-                target=self._read_stream,
-                args=(self.singbox_process.stdout, self._stdout_lines),
+            # Start a thread for reading stdout and stderr streams
+            def _monitor_streams():
+                sel = selectors.DefaultSelector()
+                sel.register(self.singbox_process.stdout, selectors.EVENT_READ, (self._stdout_lines, "stdout"))
+                sel.register(self.singbox_process.stderr, selectors.EVENT_READ, (self._stderr_lines, "stderr"))
+
+                while self.singbox_process.poll() is None:
+                    try:
+                        for key, _ in sel.select(timeout=0.1):
+                            stream = key.fileobj
+                            collector, name = key.data
+                            line = stream.readline()
+                            if line:
+                                collector.append(line)
+                            else:
+                                sel.unregister(stream)
+                        if not sel.get_map():
+                            break
+                    except Exception as e:
+                        logger.debug(f"Error reading from {name} stream: {e}")
+                        break
+
+                sel.close()
+
+            self._stream_thread = threading.Thread(
+                target=_monitor_streams,
                 daemon=True,
             )
-            self._stderr_thread = threading.Thread(
-                target=self._read_stream,
-                args=(self.singbox_process.stderr, self._stderr_lines),
-                daemon=True,
-            )
-            self._stdout_thread.start()
-            self._stderr_thread.start()
+            self._stream_thread.start()
 
             logger.debug(f"sing-box process started with PID {self.singbox_process.pid} in {time.time() - start_time:.2f} seconds")
 
@@ -1453,21 +1470,13 @@ class SingBoxProxy:
 
     def _join_reader_threads(self, timeout=2):
         """Wait for reader threads to finish."""
-        if self._stdout_thread and self._stdout_thread.is_alive():
+        if self._stream_thread and self._stream_thread.is_alive():
             try:
-                self._stdout_thread.join(timeout=timeout)
-                if self._stdout_thread.is_alive():
-                    logger.warning("stdout reader thread did not finish within timeout")
+                self._stream_thread.join(timeout=timeout)
+                if self._stream_thread.is_alive():
+                    logger.warning("stream reader thread did not finish within timeout")
             except Exception as e:
-                logger.debug(f"Error joining stdout thread: {e}")
-
-        if self._stderr_thread and self._stderr_thread.is_alive():
-            try:
-                self._stderr_thread.join(timeout=timeout)
-                if self._stderr_thread.is_alive():
-                    logger.warning("stderr reader thread did not finish within timeout")
-            except Exception as e:
-                logger.debug(f"Error joining stderr thread: {e}")
+                logger.debug(f"Error joining stream thread: {e}")
 
     def stop(self):
         """Stop the sing-box process and clean up resources."""
