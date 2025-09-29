@@ -17,7 +17,6 @@ import weakref
 import psutil
 import shutil
 import sys
-import selectors
 from pathlib import Path
 
 
@@ -1308,17 +1307,20 @@ class SingBoxProxy:
 
     def create_config_file(self, content: str | dict | None = None) -> str:
         """Create a temporary file with the sing-box configuration."""
-        if not content:
-            config = self.generate_config(self.chain_proxy)
-
-        if self.config_file:
-            if not os.path.exists(self.config_file):
-                raise FileNotFoundError(f"Specified config file does not exist: {self.config_file}")
-            with open(self.config_file, "r") as f:
-                config = json.load(f)
-
-        if isinstance(content, str):
+        if content is None:
+            if self.config_file:
+                if not os.path.exists(self.config_file):
+                    raise FileNotFoundError(f"Specified config file does not exist: {self.config_file}")
+                with open(self.config_file, "r") as f:
+                    config = json.load(f)
+            else:
+                config = self.generate_config(self.chain_proxy)
+        elif isinstance(content, str):
             config = json.loads(content)
+        elif isinstance(content, dict):
+            config = content
+        else:
+            raise TypeError("content must be None, str, or dict")
 
         # Log the generated config for debugging
         logger.debug(f"Generated sing-box config: {json.dumps(config, indent=2)}")
@@ -1425,83 +1427,20 @@ class SingBoxProxy:
             self.singbox_process = subprocess.Popen(cmd, **kwargs)
             self._process_terminated.clear()
 
-            # Start a thread for reading stdout and stderr streams
-            def _monitor_streams():
-                if os.name == "nt":
-
-                    def _read_stdout():
-                        try:
-                            for line in iter(self.singbox_process.stdout.readline, ""):
-                                if line:
-                                    self._stdout_lines.append(line)
-                                else:
-                                    break
-                        except Exception as e:
-                            logger.debug(f"Error reading stdout stream: {e}")
-                        finally:
-                            try:
-                                self.singbox_process.stdout.close()
-                            except Exception:
-                                pass
-
-                    def _read_stderr():
-                        try:
-                            for line in iter(self.singbox_process.stderr.readline, ""):
-                                if line:
-                                    self._stderr_lines.append(line)
-                                else:
-                                    break
-                        except Exception as e:
-                            logger.debug(f"Error reading stderr stream: {e}")
-                        finally:
-                            try:
-                                self.singbox_process.stderr.close()
-                            except Exception:
-                                pass
-
-                    # Create and start threads
-                    stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
-                    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-
-                    stdout_thread.start()
-                    stderr_thread.start()
-
-                    # Wait for process to complete or threads to finish
-                    while self.singbox_process.poll() is None:
-                        time.sleep(0.1)
-
-                    # Give threads a moment to finish reading remaining data
-                    stdout_thread.join(timeout=1.0)
-                    stderr_thread.join(timeout=1.0)
-
-                else:
-                    sel = selectors.DefaultSelector()
-                    sel.register(self.singbox_process.stdout, selectors.EVENT_READ, (self._stdout_lines, "stdout"))
-                    sel.register(self.singbox_process.stderr, selectors.EVENT_READ, (self._stderr_lines, "stderr"))
-
-                    while self.singbox_process.poll() is None:
-                        try:
-                            for key, _ in sel.select(timeout=0.1):
-                                stream = key.fileobj
-                                collector, name = key.data
-                                line = stream.readline()
-                                if line:
-                                    collector.append(line)
-                                else:
-                                    sel.unregister(stream)
-                            if not sel.get_map():
-                                break
-                        except Exception as e:
-                            logger.debug(f"Error reading stream: {e}")
-                            break
-
-                    sel.close()
-
-            self._stream_thread = threading.Thread(
-                target=_monitor_streams,
-                daemon=True,
-            )
-            self._stream_thread.start()
+            if self.singbox_process.stdout:
+                self._stdout_thread = threading.Thread(
+                    target=self._read_stream,
+                    args=(self.singbox_process.stdout, self._stdout_lines),
+                    daemon=True,
+                )
+                self._stdout_thread.start()
+            if self.singbox_process.stderr:
+                self._stderr_thread = threading.Thread(
+                    target=self._read_stream,
+                    args=(self.singbox_process.stderr, self._stderr_lines),
+                    daemon=True,
+                )
+                self._stderr_thread.start()
 
             logger.debug(f"sing-box process started with PID {self.singbox_process.pid} in {time.time() - start_time:.2f} seconds")
 
@@ -1530,13 +1469,14 @@ class SingBoxProxy:
 
     def _join_reader_threads(self, timeout=2):
         """Wait for reader threads to finish."""
-        if self._stream_thread and self._stream_thread.is_alive():
-            try:
-                self._stream_thread.join(timeout=timeout)
-                if self._stream_thread.is_alive():
+        for thread in (self._stdout_thread, self._stderr_thread):
+            if thread and thread.is_alive():
+                try:
+                    thread.join(timeout=timeout)
+                except Exception as e:
+                    logger.debug(f"Error joining stream thread: {e}")
+                if thread.is_alive():
                     logger.warning("stream reader thread did not finish within timeout")
-            except Exception as e:
-                logger.debug(f"Error joining stream thread: {e}")
 
     def stop(self):
         """Stop the sing-box process and clean up resources."""
@@ -1933,22 +1873,80 @@ class SingBoxClient:
         self.retry_times = retry_times
         self.timeout = timeout
         self.module = module or default_request_module
+        self._session = None
+        self._session_lock = threading.RLock()
+        self._request_func = None
+
+    def _ensure_request_callable(self):
+        if self._request_func is None and self.module is not None:
+            request_callable = getattr(self.module, "request", None)
+            if request_callable is None:
+                nested = getattr(self.module, "requests", None)
+                if nested:
+                    request_callable = getattr(nested, "request", None)
+            self._request_func = request_callable
+        return self._request_func
+
+    def _get_session(self):
+        if self.module is None:
+            return None
+        if self._session is not None:
+            return self._session
+        with self._session_lock:
+            if self._session is not None:
+                return self._session
+            candidates = []
+            for attr in ("Session", "session"):
+                candidate = getattr(self.module, attr, None)
+                if candidate:
+                    candidates.append(candidate)
+            nested = getattr(self.module, "requests", None)
+            if nested:
+                for attr in ("Session", "session"):
+                    candidate = getattr(nested, attr, None)
+                    if candidate:
+                        candidates.append(candidate)
+            for candidate in candidates:
+                try:
+                    session = candidate() if callable(candidate) else candidate
+                except Exception:
+                    continue
+                if hasattr(session, "request"):
+                    self._session = session
+                    break
+            return self._session
+
+    def close(self):
+        if self._session and hasattr(self._session, "close"):
+            try:
+                self._session.close()
+            except Exception:
+                pass
+        self._session = None
 
     def request(self, method: str, url: str, **kwargs):
         "Make an HTTP request with retries"
         start_time = time.time()
         if self.module is None:
             raise ImportError("No HTTP request module available. Please install 'curl-cffi' or 'requests'.")
+        request_callable = self._ensure_request_callable()
+        if request_callable is None:
+            raise ImportError("The configured request module does not expose a request() function.")
+        session = self._get_session()
+        if session and hasattr(session, "request"):
+            request_callable = session.request
+
         if kwargs.get("timeout") is None:
             kwargs["timeout"] = self.timeout
         if kwargs.get("proxies") is None:
             kwargs["proxies"] = self.proxy
 
-        retry_times = kwargs.pop("retries", self.retry_times if self.auto_retry else 0)
+        base_kwargs = dict(kwargs)
+        retry_times = base_kwargs.pop("retries", self.retry_times if self.auto_retry else 0)
         attempts = 0
         while attempts <= retry_times:
             try:
-                response = self.module.request(method=method, url=url, **kwargs)
+                response = request_callable(method=method, url=url, **dict(base_kwargs))
                 response.raise_for_status()
                 logger.debug(f"Request to {url} succeeded in {time.time() - start_time:.2f} seconds")
                 return response
@@ -1971,6 +1969,10 @@ class SingBoxClient:
 
     def __del__(self):
         "Ensure resources are cleaned up when the object is garbage collected."
+        try:
+            self.close()
+        except Exception:
+            pass
         if self.client:
             try:
                 self.client.stop()
