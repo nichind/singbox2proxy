@@ -10,7 +10,6 @@ import base64
 import binascii
 import urllib.parse
 import urllib.request
-import urllib.error
 import socket
 import signal
 import threading
@@ -457,13 +456,12 @@ class SingBoxProxy:
         client: "SingBoxClient" = None,
         core: "SingBoxCore" = None,
     ):
-        start_time = time.time()
         """
         Accepts either a local path (os.PathLike / str) or a URL (http:// or https://).
         If a URL is provided, self.config_url will be set and self.config_path will be None.
         If a local path is provided, self.config_path will be a pathlib.Path and self.config_url will be None.
         """
-
+        start_time = time.time()
         self._original_config = config
 
         # Distinguish between URL and local path
@@ -548,12 +546,24 @@ class SingBoxProxy:
             return f"SingBoxProxy(stopped, socks_port={self.socks_port}, http_port={self.http_port})"
 
     @property
-    def proxy_for_requests(self):
-        "Get a proxies dict suitable for requests library"
-        return {
-            "http": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
-            "https": self.socks5_proxy_url if self.socks_port else self.http_proxy_url,
-        }
+    def proxy_for_requests(self, socks: bool = True):
+        """Get a proxies dict suitable for requests library
+
+        Example:
+            proxy = SingBoxProxy(...)
+            requests.get(url, proxies=proxy.proxy_for_requests)
+        """
+        if socks and self.socks_port:
+            return {
+                "http": self.socks5_proxy_url,
+                "https": self.socks5_proxy_url,
+            }
+        elif self.http_port:
+            return {
+                "http": self.http_proxy_url,
+                "https": self.http_proxy_url,
+            }
+        raise RuntimeError("Failed to determine proxy URL for requests")
 
     @property
     def proxies(self):
@@ -588,7 +598,8 @@ class SingBoxProxy:
             except Exception:
                 pass
 
-    def _is_port_in_use(self, port: int) -> bool:
+    @classmethod
+    def _is_port_in_use(cls, port: int) -> bool:
         """Check if a port is currently in use by trying to bind to it."""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -598,7 +609,8 @@ class SingBoxProxy:
         except (socket.error, OSError):
             return True
 
-    def _pick_unused_port(self, exclude_port: int | list = None) -> int:
+    @classmethod
+    def _pick_unused_port(cls, exclude_port: int | list = None) -> int:
         start_time = time.time()
         with _port_allocation_lock:
             # Try to get a system-assigned port first
@@ -623,7 +635,7 @@ class SingBoxProxy:
             # If that fails, try a few random ports
             for _ in range(100):
                 port = random.randint(10000, 65000)
-                if port not in exclude_port and not self._is_port_in_use(port):
+                if port not in exclude_port and not cls._is_port_in_use(port):
                     _allocated_ports.add(port)
                     logger.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
                     return port
@@ -1416,9 +1428,10 @@ class SingBoxProxy:
             # Start a thread for reading stdout and stderr streams
             def _monitor_streams():
                 if os.name == "nt":
+
                     def _read_stdout():
                         try:
-                            for line in iter(self.singbox_process.stdout.readline, ''):
+                            for line in iter(self.singbox_process.stdout.readline, ""):
                                 if line:
                                     self._stdout_lines.append(line)
                                 else:
@@ -1433,7 +1446,7 @@ class SingBoxProxy:
 
                     def _read_stderr():
                         try:
-                            for line in iter(self.singbox_process.stderr.readline, ''):
+                            for line in iter(self.singbox_process.stderr.readline, ""):
                                 if line:
                                     self._stderr_lines.append(line)
                                 else:
@@ -1449,18 +1462,18 @@ class SingBoxProxy:
                     # Create and start threads
                     stdout_thread = threading.Thread(target=_read_stdout, daemon=True)
                     stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-                    
+
                     stdout_thread.start()
                     stderr_thread.start()
-                    
+
                     # Wait for process to complete or threads to finish
                     while self.singbox_process.poll() is None:
                         time.sleep(0.1)
-                    
+
                     # Give threads a moment to finish reading remaining data
                     stdout_thread.join(timeout=1.0)
                     stderr_thread.join(timeout=1.0)
-                
+
                 else:
                     sel = selectors.DefaultSelector()
                     sel.register(self.singbox_process.stdout, selectors.EVENT_READ, (self._stdout_lines, "stdout"))
@@ -1830,6 +1843,11 @@ class SingBoxProxy:
         if not self.socks_port:
             return None
         return f"socks5://127.0.0.1:{self.socks_port}"
+
+    @property
+    def socks_proxy_url(self):
+        """Get the SOCKS5 proxy URL."""
+        return self.socks5_proxy_url
 
     @property
     def http_proxy_url(self):

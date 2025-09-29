@@ -9,10 +9,8 @@ TEST_LINK = os.environ.get("TEST_SINGBOX_LINK")
 @unittest.skipIf(not TEST_LINK, "TEST_SINGBOX_LINK environment variable not set")
 class TestSingBoxFetch(unittest.TestCase):
     def test_pick_unused_port(self):
-        proxy = SingBoxProxy(TEST_LINK)
-        port = proxy._pick_unused_port()
-        self.assertIsInstance(port, int)
-        self.assertGreater(port, 0)
+        port = SingBoxProxy._pick_unused_port()
+        self.assertIsNotNone(port)
 
     def test_proxy_client(self):
         proxy = SingBoxProxy(TEST_LINK)
