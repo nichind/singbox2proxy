@@ -95,21 +95,21 @@ Examples:
             main_proxy = SingBoxProxy(args.urls[0], http_port=args.http_port, socks_port=args.socks_port, config_only=args.config_only)
             proxies.append(main_proxy)
 
+        def _save_config(config, path):
+            with open(path, "w") as f:
+                json.dump(config, f, indent=2)
+            print(f"Configuration saved to {path}")
+
         if args.config_only:
             config = main_proxy.generate_config()
             print(json.dumps(config, indent=2))
 
             if args.output_config:
-                with open(args.output_config, "w") as f:
-                    json.dump(config, f, indent=2)
-                print(f"Configuration saved to {args.output_config}")
+                _save_config(config, args.output_config)
             return
 
         if args.output_config:
-            config = main_proxy.config
-            with open(args.output_config, "w") as f:
-                json.dump(config, f, indent=2)
-            print(f"Configuration saved to {args.output_config}")
+            _save_config(main_proxy.config, args.output_config)
 
         # Print proxy information
         print("Proxy started successfully")
@@ -127,10 +127,11 @@ Examples:
                     ip_data = response.json()
                     print(f"Proxy test successful! External IP: {ip_data['ip']}")
                 else:
-                    print("Proxy test failed with status code: {response.status_code}")
+                    print(f"Proxy test failed with status code: {response.status_code}")
             except Exception as e:
                 print(f"Proxy test failed: {str(e)}")
-
+            sys.exit(0)
+            
         print("\nProxy is running. Press Ctrl+C to stop.")
 
         # Keep the script running
@@ -142,7 +143,6 @@ Examples:
 
     except Exception as e:
         print(f"Error: {str(e)}", file=sys.stderr)
-        sys.exit(1)
 
     finally:
         # Clean up all proxies
@@ -152,6 +152,8 @@ Examples:
             except Exception:
                 pass
         print("Proxy stopped.")
+        
+    sys.exit(1)
 
 
 if __name__ == "__main__":
