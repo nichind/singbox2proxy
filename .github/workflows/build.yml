@@ -18,7 +18,7 @@ jobs:
           - os: windows
             runs-on: windows-latest
           - os: macos
-            runs-on: macos-latest
+            runs-on: macos-13
     env:
       TEST_SINGBOX_LINK: ${{ secrets.TEST_SINGBOX_LINK }}
     steps:
