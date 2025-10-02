@@ -14,10 +14,27 @@ import socket
 import signal
 import threading
 import weakref
-import psutil
 import shutil
 import sys
 from pathlib import Path
+
+
+_psutil_module = None  
+
+def _get_psutil():
+    """Import psutil when needed.
+
+    Returns:
+        module | None: psutil module if available, else None.
+    """
+    global _psutil_module
+    if _psutil_module is None:
+        try:
+            import psutil  # type: ignore
+            _psutil_module = psutil
+        except ImportError:
+            _psutil_module = False
+    return _psutil_module if _psutil_module is not False else None
 
 
 logger = logging.getLogger("singbox2proxy")
@@ -65,12 +82,11 @@ def _register_signal_handlers():
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
-    # Register handlers for common termination signals
-    if os.name != "nt":  # Unix-like systems
+    if os.name != "nt":
         signal.signal(signal.SIGTERM, cleanup_handler)
         signal.signal(signal.SIGINT, cleanup_handler)
         signal.signal(signal.SIGHUP, cleanup_handler)
-    else:  # Windows
+    else:
         signal.signal(signal.SIGTERM, cleanup_handler)
         signal.signal(signal.SIGINT, cleanup_handler)
 
@@ -152,13 +168,7 @@ class SingBoxCore:
             """Download and run the official sing-box install script.
 
             This uses the upstream install.sh which handles deb/rpm/Arch/OpenWrt/etc.
-            Parameters:
-              - beta: pass --beta to installer to install latest beta
-              - version: pass --version <version> to installer
-              - use_sudo: if True and not running as root, attempts to prefix with sudo
-              - install_url: URL of the install script (default official URL)
-            Returns:
-              - True on success, raises RuntimeError on failure.
+                            Uses upstream install.sh (deb/rpm/Arch/OpenWrt/etc.).
             """
             logger.info("Installing sing-box via upstream install script")
             if os.name == "nt":
@@ -1585,16 +1595,16 @@ class SingBoxProxy:
 
     def _terminate_windows_process(self, pid, timeout):
         """Terminate process on Windows."""
-        try:
-            # Use psutil
+        ps = _get_psutil()
+        if ps is not None:
             try:
-                parent = psutil.Process(pid)
+                parent = ps.Process(pid)
                 children = parent.children(recursive=True)
 
                 for child in children:
                     try:
                         child.terminate()
-                    except psutil.NoSuchProcess:
+                    except ps.NoSuchProcess:
                         pass
 
                 parent.terminate()
@@ -1603,37 +1613,112 @@ class SingBoxProxy:
                     parent.wait(timeout=timeout)
                     self._process_terminated.set()
                     return True
-                except psutil.TimeoutExpired:
+                except ps.TimeoutExpired:
                     # Force kill if timeout
                     logger.warning("Process didn't terminate gracefully, force killing")
                     for child in children:
                         try:
                             child.kill()
-                        except psutil.NoSuchProcess:
+                        except ps.NoSuchProcess:
                             pass
                     parent.kill()
                     parent.wait(timeout=1)
                     self._process_terminated.set()
                     return True
-
-            except psutil.NoSuchProcess:
+            except ps.NoSuchProcess:
                 self._process_terminated.set()
                 return True
+            except Exception as e:
+                logger.debug(f"psutil termination path failed, falling back: {e}")
 
-        except ImportError:
-            # Fallback to subprocess
+        # Fallback to subprocess / default methods
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False, capture_output=True, timeout=timeout)
+            time.sleep(0.001)
+            if self.singbox_process.poll() is not None:
+                self._process_terminated.set()
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Final fallback
+        try:
+            self.singbox_process.terminate()
+            self.singbox_process.wait(timeout=timeout)
+            self._process_terminated.set()
+            return True
+        except subprocess.TimeoutExpired:
+            self.singbox_process.kill()
+            self.singbox_process.wait(timeout=1)
+            self._process_terminated.set()
+            return True
+
+    def _terminate_unix_process(self, pid, timeout):
+        """Terminate process on Unix-like systems."""
+        ps = _get_psutil()
+        if ps is not None:
             try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False, capture_output=True, timeout=timeout)
-                time.sleep(0.001)
-                if self.singbox_process.poll() is not None:
+                parent = ps.Process(pid)
+                children = parent.children(recursive=True)
+
+                for child in children:
+                    try:
+                        child.terminate()
+                    except ps.NoSuchProcess:
+                        pass
+                parent.terminate()
+
+                # Wait for graceful termination
+                try:
+                    parent.wait(timeout=timeout)
                     self._process_terminated.set()
                     return True
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
+                except ps.TimeoutExpired:
+                    # Force kill if timeout
+                    logger.warning("Process didn't terminate gracefully, sending SIGKILL")
+                    for child in children:
+                        try:
+                            child.kill()
+                        except ps.NoSuchProcess:
+                            pass
+                    parent.kill()
+                    parent.wait(timeout=1)
+                    self._process_terminated.set()
+                    return True
+            except ps.NoSuchProcess:
+                self._process_terminated.set()
+                return True
+            except Exception as e:
+                logger.debug(f"psutil unix termination path failed, falling back: {e}")
 
-            # Final fallback
+        # Fallback without psutil
+        try:
+            # Create process group to manage child processes
+            if hasattr(os, "killpg"):
+                try:
+                    # Try to kill the entire process group
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+
+                    # Wait for termination
+                    start_time = time.time()
+                    while time.time() - start_time < timeout:
+                        if self.singbox_process.poll() is not None:
+                            self._process_terminated.set()
+                            return True
+                        time.sleep(0.001)
+
+                    # Force kill if timeout
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    self.singbox_process.wait(timeout=1)
+                    self._process_terminated.set()
+                    return True
+
+                except (ProcessLookupError, OSError):
+                    pass
+
+            # Fallback to individual process termination
+            self.singbox_process.terminate()
             try:
-                self.singbox_process.terminate()
                 self.singbox_process.wait(timeout=timeout)
                 self._process_terminated.set()
                 return True
@@ -1643,85 +1728,10 @@ class SingBoxProxy:
                 self._process_terminated.set()
                 return True
 
-    def _terminate_unix_process(self, pid, timeout):
-        """Terminate process on Unix-like systems."""
-        try:
-            try:
-                parent = psutil.Process(pid)
-                children = parent.children(recursive=True)
-
-                for child in children:
-                    try:
-                        child.terminate()
-                    except psutil.NoSuchProcess:
-                        pass
-                parent.terminate()
-
-                # Wait for graceful termination
-                try:
-                    parent.wait(timeout=timeout)
-                    self._process_terminated.set()
-                    return True
-                except psutil.TimeoutExpired:
-                    # Force kill if timeout
-                    logger.warning("Process didn't terminate gracefully, sending SIGKILL")
-                    for child in children:
-                        try:
-                            child.kill()
-                        except psutil.NoSuchProcess:
-                            pass
-                    parent.kill()
-                    parent.wait(timeout=1)
-                    self._process_terminated.set()
-                    return True
-
-            except psutil.NoSuchProcess:
-                # Process already terminated
-                self._process_terminated.set()
-                return True
-
-        except ImportError:
-            # Fallback without psutil
-            try:
-                # Create process group to manage child processes
-                if hasattr(os, "killpg"):
-                    try:
-                        # Try to kill the entire process group
-                        os.killpg(os.getpgid(pid), signal.SIGTERM)
-
-                        # Wait for termination
-                        start_time = time.time()
-                        while time.time() - start_time < timeout:
-                            if self.singbox_process.poll() is not None:
-                                self._process_terminated.set()
-                                return True
-                            time.sleep(0.001)
-
-                        # Force kill if timeout
-                        os.killpg(os.getpgid(pid), signal.SIGKILL)
-                        self.singbox_process.wait(timeout=1)
-                        self._process_terminated.set()
-                        return True
-
-                    except (ProcessLookupError, OSError):
-                        pass
-
-                # Fallback to individual process termination
-                self.singbox_process.terminate()
-                try:
-                    self.singbox_process.wait(timeout=timeout)
-                    self._process_terminated.set()
-                    return True
-                except subprocess.TimeoutExpired:
-                    self.singbox_process.kill()
-                    self.singbox_process.wait(timeout=1)
-                    self._process_terminated.set()
-                    return True
-
-            except (ProcessLookupError, OSError):
-                # Process already terminated
-                self._process_terminated.set()
-                return True
+        except (ProcessLookupError, OSError):
+            # Process already terminated
+            self._process_terminated.set()
+            return True
 
     def _emergency_cleanup(self):
         """Emergency cleanup called by signal handler."""
@@ -1800,11 +1810,13 @@ class SingBoxProxy:
     def usage_memory(self):
         """Get the memory usage of the sing-box process."""
         if self.singbox_process and self.singbox_process.pid:
-            try:
-                process = psutil.Process(self.singbox_process.pid)
-                return process.memory_info().rss
-            except Exception as exc:
-                logger.error(f"Error getting memory usage: {exc}")
+            ps = _get_psutil()
+            if ps is not None:
+                try:
+                    process = ps.Process(self.singbox_process.pid)
+                    return process.memory_info().rss
+                except Exception as exc:
+                    logger.debug(f"Error getting memory usage: {exc}")
         return 0
 
     @property
@@ -1816,11 +1828,13 @@ class SingBoxProxy:
     def usage_cpu(self):
         """Get the CPU usage of the sing-box process."""
         if self.singbox_process and self.singbox_process.pid:
-            try:
-                process = psutil.Process(self.singbox_process.pid)
-                return process.cpu_percent(interval=1)
-            except Exception as exc:
-                logger.error(f"Error getting CPU usage: {exc}")
+            ps = _get_psutil()
+            if ps is not None:
+                try:
+                    process = ps.Process(self.singbox_process.pid)
+                    return process.cpu_percent(interval=1)
+                except Exception as exc:
+                    logger.debug(f"Error getting CPU usage: {exc}")
         return 0
 
     def __enter__(self):
