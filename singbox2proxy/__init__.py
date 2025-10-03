@@ -1,6 +1,6 @@
 from .base import SingBoxCore, SingBoxProxy, enable_logging, disable_logging, default_core
 
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 
 print(f"singbox2proxy version {VERSION}")
 
