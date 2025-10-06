@@ -19,7 +19,8 @@ import sys
 from pathlib import Path
 
 
-_psutil_module = None  
+_psutil_module = None
+
 
 def _get_psutil():
     """Import psutil when needed.
@@ -31,6 +32,7 @@ def _get_psutil():
     if _psutil_module is None:
         try:
             import psutil  # type: ignore
+
             _psutil_module = psutil
         except ImportError:
             _psutil_module = False
@@ -111,7 +113,57 @@ atexit.register(_cleanup_all_processes)
 
 
 class SingBoxCore:
+    """Manages the sing-box executable and its lifecycle.
+    
+    This class is responsible for locating, installing (if needed), and providing
+    access to the sing-box executable. It handles automatic detection of sing-box
+    in the system PATH, and can automatically install it via package managers or
+    the official installation script if not found.
+    
+    The class provides methods to:
+    - Check if sing-box is installed and accessible
+    - Get version information
+    - Run sing-box commands
+    - Install sing-box automatically via various methods
+    
+    Attributes:
+        executable (str): Path or command name of the sing-box executable.
+    
+    Example:
+        Using default core (auto-detect or install):
+        >>> core = SingBoxCore()
+        >>> print(core.version)
+        1.8.0
+        >>> print(core.is_available())
+        True
+        
+        Using custom executable path:
+        >>> core = SingBoxCore(executable="/usr/local/bin/sing-box")
+        >>> info = core.get_version_info()
+        >>> print(info['version'])
+        
+        Running sing-box commands:
+        >>> result = core.run_command(["check", "-c", "config.json"])
+        >>> print(result.returncode)
+    """
+
     def __init__(self, executable: os.PathLike = None):
+        """Initialize a SingBoxCore instance.
+        
+        Args:
+            executable: Optional path to a specific sing-box executable. If provided,
+                       the file must exist. If None, the class will attempt to find
+                       sing-box in PATH or install it automatically.
+        
+        Raises:
+            FileNotFoundError: If a custom executable path is provided but doesn't exist.
+        
+        Note:
+            When no executable is specified, this will attempt to:
+            1. Find sing-box in system PATH
+            2. Install via official install.sh script (Unix-like systems)
+            3. Install via package managers (apt, dnf, pacman, brew, etc.)
+        """
         start_time = time.time()
         if executable and not os.path.exists(executable):
             raise FileNotFoundError(f"Custom set sing-box executable not found: {executable}")
@@ -122,11 +174,29 @@ class SingBoxCore:
 
     def _ensure_executable(self) -> str:
         """Ensure that the sing-box executable is available.
-        Returns the path (terminal alias) to the executable, or None if not found/installed.
+        
+        This method attempts to locate or install sing-box through multiple strategies:
+        1. Check if sing-box is available in system PATH
+        2. Install via official install.sh script (Unix-like systems only)
+        3. Install via package managers (apt, dnf, pacman, brew, scoop, etc.)
+        
+        Returns:
+            str: Path or command name to the sing-box executable, or None if not found.
+        
+        Note:
+            Installation attempts are logged at INFO level. If all methods fail,
+            a warning is logged and None is returned.
         """
 
         def _test_terminal() -> bool:
-            "Check if sing-box is accessible from terminal"
+            """Check if sing-box is accessible from terminal.
+            
+            Attempts to run 'sing-box version' command to verify availability.
+            On Windows, also checks for 'sing-box.exe'.
+            
+            Returns:
+                bool: True if sing-box is accessible and working, False otherwise.
+            """
             executables = ["sing-box"]
             if os.name == "nt":  # Windows
                 executables.extend(["sing-box.exe"])
@@ -168,7 +238,19 @@ class SingBoxCore:
             """Download and run the official sing-box install script.
 
             This uses the upstream install.sh which handles deb/rpm/Arch/OpenWrt/etc.
-                            Uses upstream install.sh (deb/rpm/Arch/OpenWrt/etc.).
+            Not available on Windows systems.
+            
+            Args:
+                beta: If True, install the beta version instead of stable.
+                version: Specific version to install (e.g., "1.12.8"). If None, installs latest.
+                use_sudo: If True, prepends sudo to the install command (for non-root users).
+                install_url: URL of the installation script (default: official sing-box script).
+            
+            Returns:
+                bool: True if installation succeeded, False otherwise.
+            
+            Raises:
+                RuntimeError: If the installation script cannot be downloaded.
             """
             logger.info("Installing sing-box via upstream install script")
             if os.name == "nt":
@@ -222,10 +304,18 @@ class SingBoxCore:
                 return False
 
         def _install_via_package_manager() -> bool:
-            """
-            Attempt to install sing-box using common package managers.
+            """Attempt to install sing-box using common package managers.
+            
+            Supports multiple package managers across different platforms:
+            - Windows: scoop, choco, winget
+            - macOS: brew
+            - Linux: apt, dnf, yum, pacman, yay, paru, apk, nix-env, pkg
+            
+            The function will attempt all available package managers until one succeeds.
+            Commands requiring root privileges will automatically use sudo if available.
 
-            Returns True on success.
+            Returns:
+                bool: True if installation succeeded via any package manager, False otherwise.
             """
             logger.info("Attempting installation via package manager")
 
@@ -407,6 +497,11 @@ class SingBoxCore:
         return None
 
     def _version(self):
+        """Internal method to retrieve sing-box version string.
+        
+        Returns:
+            str | None: Version string if available, None otherwise.
+        """
         if not self.executable:
             return None
 
@@ -430,8 +525,178 @@ class SingBoxCore:
 
     @property
     def version(self):
-        """Get the sing-box executable version."""
+        """Get the sing-box executable version.
+        
+        Returns:
+            str | None: Version string (e.g., "1.12.8") or None if unavailable.
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> print(core.version)
+            1.8.0
+        """
         return self._version()
+    
+    def is_available(self) -> bool:
+        """Check if the sing-box executable is available and working.
+        
+        Returns:
+            bool: True if sing-box can be executed, False otherwise.
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> if core.is_available():
+            ...     print("sing-box is ready to use")
+        """
+        return self.executable is not None and self._version() is not None
+    
+    def get_version_info(self) -> dict:
+        """Get detailed version information from sing-box.
+        
+        Parses the version output to extract structured information including
+        version number, build tags, and other metadata if available.
+        
+        Returns:
+            dict: Dictionary containing version information with keys:
+                  - 'version': Version string
+                  - 'raw': Raw version output
+                  - 'available': Boolean indicating if sing-box is working
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> info = core.get_version_info()
+            >>> print(f"Version: {info['version']}")
+            >>> print(f"Available: {info['available']}")
+        """
+        version_str = self._version()
+        return {
+            "version": version_str,
+            "raw": version_str,
+            "available": version_str is not None,
+            "executable": self.executable,
+        }
+    
+    def run_command(self, args: list[str], timeout: int = 30, **kwargs) -> subprocess.CompletedProcess:
+        """Run a sing-box command with the specified arguments.
+        
+        Args:
+            args: List of command arguments (e.g., ["check", "-c", "config.json"]).
+            timeout: Maximum time in seconds to wait for command completion.
+            **kwargs: Additional keyword arguments to pass to subprocess.run.
+        
+        Returns:
+            subprocess.CompletedProcess: Result of the command execution.
+        
+        Raises:
+            RuntimeError: If sing-box executable is not available.
+            subprocess.TimeoutExpired: If the command times out.
+            subprocess.CalledProcessError: If check=True and command fails.
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> result = core.run_command(["check", "-c", "config.json"])
+            >>> if result.returncode == 0:
+            ...     print("Config is valid")
+        """
+        if not self.executable:
+            raise RuntimeError("sing-box executable is not available")
+        
+        cmd = [self.executable] + args
+        
+        # Set defaults for kwargs
+        kwargs.setdefault("timeout", timeout)
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        
+        if os.name == "nt":
+            kwargs.setdefault("shell", True)
+        
+        return subprocess.run(cmd, **kwargs)
+    
+    def check_config(self, config_path: os.PathLike | str) -> tuple[bool, str]:
+        """Check if a sing-box configuration file is valid.
+        
+        Args:
+            config_path: Path to the configuration file to validate.
+        
+        Returns:
+            tuple[bool, str]: A tuple of (is_valid, message) where is_valid is True
+                            if the config is valid, and message contains output or error info.
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> is_valid, msg = core.check_config("config.json")
+            >>> if is_valid:
+            ...     print("Configuration is valid")
+            >>> else:
+            ...     print(f"Configuration error: {msg}")
+        """
+        if not self.executable:
+            return False, "sing-box executable is not available"
+        
+        try:
+            result = self.run_command(["check", "-c", str(config_path)], timeout=10)
+            if result.returncode == 0:
+                return True, result.stdout or "Configuration is valid"
+            else:
+                return False, result.stderr or result.stdout or "Configuration check failed"
+        except subprocess.TimeoutExpired:
+            return False, "Configuration check timed out"
+        except Exception as e:
+            return False, f"Error checking configuration: {e}"
+    
+    def format_config(self, config_path: os.PathLike | str, output_path: os.PathLike | str = None) -> tuple[bool, str]:
+        """Format a sing-box configuration file.
+        
+        Args:
+            config_path: Path to the configuration file to format.
+            output_path: Optional path to write formatted config. If None, formats in-place.
+        
+        Returns:
+            tuple[bool, str]: A tuple of (success, message).
+        
+        Example:
+            >>> core = SingBoxCore()
+            >>> success, msg = core.format_config("config.json")
+            >>> print(msg)
+        """
+        if not self.executable:
+            return False, "sing-box executable is not available"
+        
+        try:
+            args = ["format", "-c", str(config_path)]
+            if output_path:
+                args.extend(["-w", str(output_path)])
+            else:
+                args.append("-w")
+            
+            result = self.run_command(args, timeout=10)
+            if result.returncode == 0:
+                return True, "Configuration formatted successfully"
+            else:
+                return False, result.stderr or result.stdout or "Format failed"
+        except Exception as e:
+            return False, f"Error formatting configuration: {e}"
+    
+    def __repr__(self) -> str:
+        """Return a detailed string representation of the SingBoxCore instance.
+        
+        Returns:
+            str: String representation showing executable path and version.
+        """
+        version = self._version()
+        return f"<SingBoxCore executable={self.executable!r} version={version!r}>"
+    
+    def __str__(self) -> str:
+        """Return a readble string representation.
+        
+        Returns:
+            str: String showing version or unavailable status.
+        """
+        version = self._version()
+        if version:
+            return f"SingBoxCore(version={version})"
+        return "SingBoxCore(unavailable)"
 
 
 default_core = SingBoxCore()
@@ -453,6 +718,46 @@ def _safe_base64_decode(data: str) -> str:
 
 
 class SingBoxProxy:
+    """A wrapper class for managing sing-box proxy instances.
+
+    This class provides a high-level interface for creating and managing sing-box proxy servers.
+    It supports multiple proxy protocols (VMess, VLESS, Shadowsocks, Trojan, Hysteria, etc.) and
+    can automatically parse proxy links or use existing configuration files.
+
+    The proxy can operate in two modes:
+    - Active mode (default): Automatically starts the sing-box process upon initialization
+    - Config-only mode: Only generates configuration without starting the process
+
+    Features:
+    - Automatic port allocation for HTTP and SOCKS5 proxies
+    - Proxy chaining support (route through another proxy)
+    - Built-in HTTP client with automatic proxy configuration
+    - Process lifecycle management with signal handling
+    - Cross-platform support (Windows, macOS, Linux)
+
+    Example:
+        Basic usage with a proxy link:
+        >>> proxy = SingBoxProxy("vmess://base64encodedconfig")
+        >>> print(proxy.http_proxy_url)
+        http://127.0.0.1:12345
+
+        Using with requests library:
+        >>> import requests
+        >>> proxy = SingBoxProxy("ss://...")
+        >>> response = requests.get("https://api.ipify.org", proxies=proxy.proxies)
+
+        Context manager usage:
+        >>> with SingBoxProxy("vless://...") as proxy:
+        ...     response = proxy.get("https://example.com")
+
+        Custom ports and config file:
+        >>> proxy = SingBoxProxy(
+        ...     config="/path/to/config.json",
+        ...     http_port=8080,
+        ...     socks_port=1080
+        ... )
+    """
+
     def __init__(
         self,
         config: os.PathLike | str,
@@ -465,10 +770,39 @@ class SingBoxProxy:
         client: "SingBoxClient" = None,
         core: "SingBoxCore" = None,
     ):
-        """
-        Accepts either a local path (os.PathLike / str) or a URL (http:// or https://).
-        If a URL is provided, self.config_url will be set and self.config_path will be None.
-        If a local path is provided, self.config_path will be a pathlib.Path and self.config_url will be None.
+        """Initialize a SingBoxProxy instance.
+
+        Args:
+            config: Either a proxy link (vmess://, vless://, ss://, trojan://, etc.) or a path
+                   to a sing-box configuration file. Proxy links will be automatically parsed
+                   into sing-box configuration format.
+            http_port: Port for HTTP proxy server. If None, an unused port is automatically
+                      selected. Set to False to disable HTTP proxy.
+            socks_port: Port for SOCKS5 proxy server. If None, an unused port is automatically
+                       selected. Set to False to disable SOCKS5 proxy.
+            chain_proxy: Optional SingBoxProxy instance to chain through. When set, all traffic
+                        from this proxy will be routed through the specified chain proxy.
+            config_only: If True, only generate configuration without starting the sing-box
+                        process. Useful for inspecting or modifying configuration before starting.
+            config_file: Path where the generated configuration file should be saved. If None,
+                        a temporary file will be created.
+            config_directory: Working directory for the sing-box process. If None, uses the
+                            system temporary directory.
+            client: Custom SingBoxClient instance for HTTP requests. If None, a default client
+                   is created. Set to False to disable client creation.
+            core: Custom SingBoxCore instance specifying the sing-box executable. If None,
+                 uses the default core (which auto-detects or installs sing-box).
+
+        Raises:
+            TypeError: If config is not a string or path-like object.
+            FileNotFoundError: If a custom executable is specified but doesn't exist.
+            RuntimeError: If sing-box fails to start or ports cannot be allocated.
+            ValueError: If proxy link format is invalid or unsupported.
+
+        Note:
+            When config is a proxy link (e.g., "vmess://..."), self.config_url will be set
+            and self.config_path will be None. When config is a file path, self.config_path
+            will be set and self.config_url will be None.
         """
         start_time = time.time()
         self._original_config = config
@@ -540,7 +874,19 @@ class SingBoxProxy:
         )
 
     def __str__(self) -> str:
-        """print(SingBoxProxy)"""
+        """Return a readable string representation of the proxy instance.
+
+        Returns a formatted string showing the current status and proxy URLs if running,
+        or the configured ports if stopped.
+
+        Returns:
+            str: Status string.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> print(proxy)
+            SingBoxProxy(running, socks=socks5://127.0.0.1:1080, http=http://127.0.0.1:8080)
+        """
         if self.running:
             try:
                 socks = self.socks5_proxy_url
@@ -556,11 +902,26 @@ class SingBoxProxy:
 
     @property
     def proxy_for_requests(self, socks: bool = True):
-        """Get a proxies dict suitable for requests library
+        """Get a proxies dictionary suitable for the requests library.
+
+        Returns a dictionary with 'http' and 'https' keys pointing to the proxy URL,
+        formatted for use with the requests library's proxies parameter.
+
+        Args:
+            socks: If True (default), returns SOCKS5 proxy URLs. If False or SOCKS is
+                  unavailable, returns HTTP proxy URLs.
+
+        Returns:
+            dict: Dictionary with 'http' and 'https' keys mapping to proxy URLs.
+
+        Raises:
+            RuntimeError: If no proxy ports are available.
 
         Example:
-            proxy = SingBoxProxy(...)
-            requests.get(url, proxies=proxy.proxy_for_requests)
+            >>> proxy = SingBoxProxy("ss://...")
+            >>> import requests
+            >>> response = requests.get("https://api.ipify.org", proxies=proxy.proxy_for_requests)
+            >>> print(response.text)  # Your proxied IP address
         """
         if socks and self.socks_port:
             return {
@@ -576,20 +937,49 @@ class SingBoxProxy:
 
     @property
     def proxies(self):
+        """Alias for proxy_for_requests property.
+
+        Returns:
+            dict: Dictionary with 'http' and 'https' keys mapping to proxy URLs.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> requests.get("https://example.com", proxies=proxy.proxies)
+        """
         return self.proxy_for_requests
 
     @property
     def stdout(self) -> str:
-        """Get the captured stdout from the sing-box process."""
+        """Get the captured stdout from the sing-box process.
+
+        Returns all standard output text produced by the sing-box process since it started.
+       
+        Returns:
+            str: All stdout output from the sing-box process.
+        """
         return "".join(self._stdout_lines)
 
     @property
     def stderr(self) -> str:
-        """Get the captured stderr from the sing-box process."""
+        """Get the captured stderr from the sing-box process.
+
+        Returns all standard error text produced by the sing-box process since it started.
+
+        Returns:
+            str: All stderr output from the sing-box process.
+        """
         return "".join(self._stderr_lines)
 
     def _read_stream(self, stream, collector):
-        """Reads a stream line by line and appends to a collector."""
+        """Read a stream line by line and append to a collector list.
+
+        Internal method that runs in a background thread to continuously capture
+        stdout/stderr from the sing-box process
+
+        Args:
+            stream: File-like object to read from.
+            collector: List to append captured lines to.
+        """
         try:
             for line in iter(stream.readline, ""):
                 if line:
@@ -609,7 +999,14 @@ class SingBoxProxy:
 
     @classmethod
     def _is_port_in_use(cls, port: int) -> bool:
-        """Check if a port is currently in use by trying to bind to it."""
+        """Check if a TCP port is currently in use by trying to bind to it.
+
+        Args:
+            port: Port number to check (1-65535).
+
+        Returns:
+            bool: True if the port is in use, False if it's available.
+        """
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -620,6 +1017,22 @@ class SingBoxProxy:
 
     @classmethod
     def _pick_unused_port(cls, exclude_port: int | list = None) -> int:
+        """Automatically select an unused TCP port for proxy services.
+
+        First attempts to get a system-assigned ephemeral port, then falls back to
+        randomly trying ports in the range 10000-65535 if that fails. Thread-safe
+        with global port allocation tracking to prevent conflicts.
+
+        Args:
+            exclude_port: Single port number or list of port numbers to avoid.
+                         Already allocated ports are automatically excluded.
+
+        Returns:
+            int: An available port number.
+
+        Raises:
+            RuntimeError: If no unused port could be found after 100 attempts.
+        """
         start_time = time.time()
         with _port_allocation_lock:
             # Try to get a system-assigned port first
@@ -643,7 +1056,7 @@ class SingBoxProxy:
 
             # If that fails, try a few random ports
             for _ in range(100):
-                port = random.randint(10000, 65000)
+                port = random.randint(10000, 65535)
                 if port not in exclude_port and not cls._is_port_in_use(port):
                     _allocated_ports.add(port)
                     logger.debug(f"Unused port picked in {time.time() - start_time:.2f} seconds")
@@ -1220,10 +1633,41 @@ class SingBoxProxy:
             raise ValueError(f"Invalid NaiveProxy format: {str(e)}")
 
     def generate_config(self, chain_proxy=None):
-        """Generate sing-box configuration from link.
+        """Generate a sing-box configuration from a proxy link.
+
+        Automatically parses the proxy link provided during initialization and converts it
+        into a complete sing-box configuration with appropriate inbound and outbound settings.
 
         Args:
-            chain_proxy: Optional SingBoxProxy instance to chain through
+            chain_proxy: Optional SingBoxProxy instance to chain through. When provided,
+                        this proxy will route all traffic through the specified chain proxy.
+                        Not all protocols support chaining, refer to the https://sing-box.sagernet.org/configuration/inbound/
+
+        Returns:
+            dict: Complete sing-box configuration dictionary ready to be serialized to JSON.
+
+        Raises:
+            ValueError: If the proxy link format is invalid or unsupported.
+            RuntimeError: If configuration generation fails.
+
+        Supported Protocols:
+            - VMess (vmess://)
+            - VLESS (vless://)
+            - Shadowsocks (ss://)
+            - Trojan (trojan://)
+            - Hysteria v1 (hysteria://)
+            - Hysteria v2 (hy2://, hysteria2://)
+            - TUIC (tuic://)
+            - WireGuard (wg://)
+            - SSH (ssh://)
+            - SOCKS (socks://, socks4://, socks5://)
+            - HTTP/HTTPS (http://, https://)
+            - NaiveProxy (naive+https://)
+
+        Note:
+            This method is automatically called during initialization unless config_only=False.
+            The generated configuration includes SOCKS5 and/or HTTP inbound servers on the
+            configured ports.
         """
         try:
             # Determine the type of link and parse accordingly
@@ -1304,7 +1748,23 @@ class SingBoxProxy:
 
     @property
     def config(self) -> dict:
-        """Return the current sing-box configuration as a dictionary."""
+        """Return the current sing-box configuration as a dictionary.
+
+        Reads and parses the configuration file used by the running sing-box instance.
+
+        Returns:
+            dict: The complete sing-box configuration.
+
+        Raises:
+            FileNotFoundError: If the configuration file doesn't exist.
+            JSONDecodeError: If the configuration file contains invalid JSON.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> config = proxy.config
+            >>> print(config['outbounds'][0]['type'])
+            vmess
+        """
         if self.config_file and os.path.exists(self.config_file):
             try:
                 with open(self.config_file, "r") as f:
@@ -1316,7 +1776,28 @@ class SingBoxProxy:
             raise FileNotFoundError("Configuration file not found. Please start the proxy first.")
 
     def create_config_file(self, content: str | dict | None = None) -> str:
-        """Create a temporary file with the sing-box configuration."""
+        """Create a temporary file with sing-box configuration.
+
+        Generates a configuration file from the provided content or from the instance's
+        config settings. The file is created with a .json extension.
+
+        Args:
+            content: Configuration content. Can be:
+                    - None: Auto-generate from self.config_file or self.generate_config()
+                    - str: JSON string to parse and write
+                    - dict: Configuration dictionary to serialize
+
+        Returns:
+            str: Absolute path to the created configuration file.
+
+        Raises:
+            TypeError: If content is not None, str, or dict.
+            JSONDecodeError: If content string is not valid JSON.
+
+        Note:
+            The created file is tracked in self.config_file and will be automatically
+            cleaned up when the proxy is stopped or destroyed.
+        """
         if content is None:
             if self.config_file:
                 if not os.path.exists(self.config_file):
@@ -1346,7 +1827,22 @@ class SingBoxProxy:
         return temp_file_path
 
     def _check_proxy_ready(self, timeout=15):
-        """Check if the proxy ports are actually accepting connections."""
+        """Check if the proxy ports are actually accepting connections.
+
+        Polls the configured proxy ports to verify they're accepting connections,
+        indicating that sing-box has successfully started and is ready to proxy traffic.
+
+        Args:
+            timeout: Maximum seconds to wait for the proxy to become ready (default: 15).
+
+        Raises:
+            RuntimeError: If the sing-box process terminates unexpectedly.
+            TimeoutError: If the proxy doesn't become ready within the timeout period.
+
+        Note:
+            This method is automatically called by start() and should not normally be
+            called directly. It uses rapid polling (1ms intervals) for fast startup detection.
+        """
         start_time = time.time()
         last_error = None
 
@@ -1403,8 +1899,29 @@ class SingBoxProxy:
         raise TimeoutError(error_msg)
 
     def start(self):
+        """Start the sing-box process with the generated configuration.
+
+        Launches the sing-box executable as a subprocess with the appropriate configuration.
+        The process is monitored in background threads that capture stdout and stderr.
+        This method blocks until the proxy is confirmed to be accepting connections.
+
+        Raises:
+            RuntimeError: If sing-box is already running, or if the process fails to start.
+            TimeoutError: If the proxy doesn't become ready within 15 seconds.
+            FileNotFoundError: If the sing-box executable cannot be found.
+
+        Note:
+            This method is automatically called during __init__ unless config_only=True.
+            The proxy status can be checked via the 'running' attribute.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...", config_only=True)
+            >>> # Do something with config
+            >>> proxy.start()
+            >>> print(proxy.running)
+            True
+        """
         start_time = time.time()
-        """Start the sing-box process with the generated configuration."""
         if self.running:
             logger.warning("sing-box process is already running")
             return
@@ -1478,7 +1995,14 @@ class SingBoxProxy:
             raise
 
     def _join_reader_threads(self, timeout=2):
-        """Wait for reader threads to finish."""
+        """Wait for reader threads to finish.
+
+        Joins the stdout and stderr reader threads, allowing them to complete their
+        cleanup gracefully before proceeding with process termination.
+
+        Args:
+            timeout: Maximum seconds to wait for each thread (default: 2).
+        """
         for thread in (self._stdout_thread, self._stderr_thread):
             if thread and thread.is_alive():
                 try:
@@ -1489,7 +2013,30 @@ class SingBoxProxy:
                     logger.warning("stream reader thread did not finish within timeout")
 
     def stop(self):
-        """Stop the sing-box process and clean up resources."""
+        """Stop the sing-box process and clean up resources.
+
+        Gracefully terminates the sing-box process, waits for reader threads to finish,
+        and performs cleanup. This method is thread-safe and idempotent (safe to call
+        multiple times).
+
+        The method will:
+        1. Terminate the sing-box process (with escalation to kill if needed)
+        2. Join stdout/stderr reader threads
+        3. Set running=False
+        4. Call internal cleanup
+
+        Note:
+            This method is automatically called by __exit__ (context manager) and __del__.
+            Manual calls are only needed if you want to stop the proxy before the object
+            is destroyed.
+
+        Example:
+            >>> proxy = SingBoxProxy("ss://...")
+            >>> # Use proxy...
+            >>> proxy.stop()
+            >>> print(proxy.running)
+            False
+        """
         start_time = time.time()
         with self._cleanup_lock:
             if not self.running and self.singbox_process is None:
@@ -1513,16 +2060,39 @@ class SingBoxProxy:
         logger.debug(f"Sing-box stopped in {time.time() - start_time:.2f} seconds")
 
     def cleanup(self):
-        """Clean up temporary files and resources."""
+        """Clean up temporary files and resources.
+
+        Public method to trigger cleanup of configuration files and release allocated ports.
+        This is a thread-safe wrapper around the internal cleanup method.
+
+        Note:
+            Cleanup is automatically performed by stop(), __exit__, and __del__.
+            Manual calls are rarely needed.
+        """
         self._safe_cleanup()
 
     def _safe_cleanup(self):
-        """Thread-safe cleanup method."""
+        """Thread-safe cleanup method.
+
+        Acquires the cleanup lock before calling the internal cleanup method to ensure
+        thread safety during resource cleanup.
+        """
         with self._cleanup_lock:
             self._cleanup_internal()
 
     def _cleanup_internal(self):
-        """Internal cleanup method - should only be called while holding the lock."""
+        """Internal cleanup method - should only be called while holding the lock.
+
+        Performs the actual cleanup operations:
+        - Removes temporary configuration files
+        - Releases allocated ports from the global port registry
+        - Joins and cleans up reader threads
+        - Resets process references and state
+
+        Warning:
+            This method assumes the cleanup lock is already held and should not be
+            called directly. Use cleanup() or _safe_cleanup() instead.
+        """
         # Clean up temporary files
         if self.config_file:
             try:
@@ -1563,14 +2133,27 @@ class SingBoxProxy:
         self._stderr_thread = None
 
     def _terminate_process(self, timeout=2) -> bool:
-        """
-        Fast and reliable process termination with cross-platform support.
+        """Gracefully terminates the sing-box process using the most appropriate method
+        for the current platform. Uses psutil for superior process management when available,
+        with fallbacks if psutil is not installed.
+
+        The termination strategy:
+        1. Check if process is already terminated
+        2. Use platform-specific termination (Windows or Unix)
+        3. Attempt graceful termination (SIGTERM)
+        4. Escalate to forceful termination (SIGKILL) if needed
+        5. Handle child processes recursively
 
         Args:
-            timeout (int): Maximum time to wait for graceful termination
+            timeout: Maximum time in seconds to wait for graceful termination before
+                    escalating to forceful kill (default: 2).
 
         Returns:
-            bool: True if process was terminated successfully
+            bool: True if process was terminated successfully, False otherwise.
+
+        Note:
+            This method handles process groups to ensure all child processes are also
+            terminated. On Windows, uses taskkill for reliable termination.
         """
         if self.singbox_process is None:
             return True
@@ -1594,7 +2177,18 @@ class SingBoxProxy:
             return False
 
     def _terminate_windows_process(self, pid, timeout):
-        """Terminate process on Windows."""
+        """Terminate process on Windows.
+
+        Uses psutil if available for better process tree management, otherwise falls
+        back to taskkill command and finally to Python's subprocess.terminate().
+
+        Args:
+            pid: Process ID to terminate.
+            timeout: Maximum seconds to wait for graceful termination.
+
+        Returns:
+            bool: True if termination was successful.
+        """
         ps = _get_psutil()
         if ps is not None:
             try:
@@ -1654,7 +2248,19 @@ class SingBoxProxy:
             return True
 
     def _terminate_unix_process(self, pid, timeout):
-        """Terminate process on Unix-like systems."""
+        """Terminate process on Unix-like systems.
+
+        Uses psutil if available for better process tree management, otherwise falls
+        back to process groups (killpg) and signal-based termination. Handles Linux,
+        macOS, BSD, and other Unix-like systems.
+
+        Args:
+            pid: Process ID to terminate.
+            timeout: Maximum seconds to wait for graceful termination.
+
+        Returns:
+            bool: True if termination was successful.
+        """
         ps = _get_psutil()
         if ps is not None:
             try:
@@ -1734,7 +2340,16 @@ class SingBoxProxy:
             return True
 
     def _emergency_cleanup(self):
-        """Emergency cleanup called by signal handler."""
+        """Emergency cleanup called by signal handler.
+
+        Performs minimal cleanup operations when the process is being terminated by
+        a signal (SIGTERM, SIGINT, SIGHUP). Uses platform-specific methods to force
+        terminate the sing-box process without waiting.
+
+        Note:
+            Automatically registered as a signal handler during initialization.
+            Should not be called directly under normal circumstances.
+        """
         try:
             if self.singbox_process and self.singbox_process.poll() is None:
                 if os.name == "nt":
@@ -1789,60 +2404,186 @@ class SingBoxProxy:
 
     @property
     def socks5_proxy_url(self):
-        """Get the SOCKS5 proxy URL."""
+        """Get the SOCKS5 proxy URL.
+
+        Returns:
+            str: SOCKS5 URL in the format "socks5://127.0.0.1:port", or None if SOCKS5 is disabled.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> print(proxy.socks5_proxy_url)
+            socks5://127.0.0.1:1080
+        """
         if not self.socks_port:
             return None
         return f"socks5://127.0.0.1:{self.socks_port}"
 
     @property
     def socks_proxy_url(self):
-        """Get the SOCKS5 proxy URL."""
+        """Get the SOCKS5 proxy URL.
+
+        Alias for socks5_proxy_url property.
+
+        Returns:
+            str: SOCKS5 URL in the format "socks5://127.0.0.1:port", or None if SOCKS5 is disabled.
+        """
         return self.socks5_proxy_url
 
     @property
     def http_proxy_url(self):
-        """Get the HTTP proxy URL."""
+        """Get the HTTP proxy URL.
+
+        Returns:
+            str: HTTP URL in the format "http://127.0.0.1:port", or None if HTTP proxy is disabled.
+
+        Example:
+            >>> proxy = SingBoxProxy("ss://...")
+            >>> print(proxy.http_proxy_url)
+            http://127.0.0.1:8080
+        """
         if not self.http_port:
             return None
         return f"http://127.0.0.1:{self.http_port}"
 
     @property
     def usage_memory(self):
-        """Get the memory usage of the sing-box process."""
-        if self.singbox_process and self.singbox_process.pid:
-            ps = _get_psutil()
-            if ps is not None:
-                try:
-                    process = ps.Process(self.singbox_process.pid)
-                    return process.memory_info().rss
-                except Exception as exc:
-                    logger.debug(f"Error getting memory usage: {exc}")
+        """Get the memory usage of the sing-box process in bytes.
+
+        Requires psutil to be installed. Returns 0 if psutil is not available or
+        if the process is not running.
+
+        Returns:
+            int: Memory usage in bytes (RSS - Resident Set Size).
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> print(f"Memory: {proxy.usage_memory / 1024 / 1024:.2f} MB")
+            Memory: 45.23 MB
+        """
+        try:
+            process = self.psutil_process
+            if process:
+                return process.memory_info().rss
+        except Exception as exc:
+            logger.debug(f"Error getting memory usage: {exc}")
         return 0
 
     @property
     def usage_memory_mb(self):
-        """Get the memory usage of the sing-box process in MB."""
+        """Get the memory usage of the sing-box process in megabytes.
+
+        Convenience property that returns memory usage in MB instead of bytes.
+
+        Returns:
+            float: Memory usage in megabytes.
+
+        Example:
+            >>> proxy = SingBoxProxy("ss://...")
+            >>> print(f"Memory: {proxy.usage_memory_mb:.2f} MB")
+            Memory: 45.23 MB
+        """
         return self.usage_memory / (1024 * 1024)
 
     @property
     def usage_cpu(self):
-        """Get the CPU usage of the sing-box process."""
+        """Get the CPU usage percentage of the sing-box process.
+
+        Requires psutil to be installed. Returns 0 if psutil is not available or
+        if the process is not running. The percentage can exceed 100% on multi-core systems.
+
+        Returns:
+            float: CPU usage as a percentage (0.0 to N*100.0 where N is the number of cores).
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> print(f"CPU: {proxy.usage_cpu:.1f}%")
+            CPU: 2.5%
+        """
+        try:
+            process = self.psutil_process
+            if process:
+                return process.cpu_percent(interval=1)
+        except Exception as exc:
+            logger.debug(f"Error getting CPU usage: {exc}")
+        return 0
+
+    @property
+    def psutil_process(self) -> object | None:
         if self.singbox_process and self.singbox_process.pid:
             ps = _get_psutil()
             if ps is not None:
                 try:
                     process = ps.Process(self.singbox_process.pid)
-                    return process.cpu_percent(interval=1)
+                    return process
                 except Exception as exc:
-                    logger.debug(f"Error getting CPU usage: {exc}")
-        return 0
+                    logger.debug(f"Error getting psutil process: {exc}")
+        logger.debug("psutil not available or process not running")
+        return None
+
+    @property
+    def latency_ms(self):
+        """Measure latency to a known endpoint through the proxy.
+
+        Uses the configured HTTP client to measure the round-trip time to a known
+        endpoint (https://api.ipify.org) through the proxy. Requires the HTTP client
+        to be properly configured with the proxy settings.
+
+        Returns:
+            float: Latency in milliseconds, or None if measurement fails.
+
+        Example:
+            >>> proxy = SingBoxProxy("vmess://...")
+            >>> latency = proxy.latency_ms
+            >>> if latency is not None:
+            ...     print(f"Latency: {latency:.2f} ms")
+            ... else:
+            ...     print("Latency measurement failed")
+        """
+        if not self.running or not self.client:
+            logger.debug("Proxy not running or HTTP client not configured")
+            return None
+        try:
+            start_time = time.time()
+            response = self.client.get("https://api.ipify.org", timeout=5)
+            if response.status_code == 200:
+                latency = (time.time() - start_time) * 1000  # Convert to milliseconds
+                return latency
+            else:
+                logger.debug(f"Unexpected status code during latency check: {response.status_code}")
+                return None
+        except Exception as e:
+            logger.debug(f"Error measuring latency: {e}")
+            return None
 
     def __enter__(self):
-        """Context manager entry."""
+        """Context manager entry.
+
+        Allows using SingBoxProxy with the 'with' statement for automatic cleanup.
+
+        Returns:
+            SingBoxProxy: Returns self for use in the context.
+
+        Example:
+            >>> with SingBoxProxy("vmess://...") as proxy:
+            ...     response = proxy.get("https://api.ipify.org")
+            ...     print(response.text)
+            # Proxy is automatically stopped and cleaned up after the block
+        """
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
+        """Context manager exit.
+
+        Automatically stops the proxy and cleans up resources when exiting the 'with' block.
+
+        Args:
+            exc_type: Exception type if an exception occurred, None otherwise.
+            exc_val: Exception value if an exception occurred, None otherwise.
+            exc_tb: Exception traceback if an exception occurred, None otherwise.
+
+        Returns:
+            bool: False to propagate any exception that occurred in the context.
+        """
         try:
             self.stop()
             self.cleanup()
@@ -1851,7 +2592,16 @@ class SingBoxProxy:
         return False
 
     def __del__(self):
-        """Ensure resources are cleaned up when the object is garbage collected."""
+        """Ensure resources are cleaned up when the object is garbage collected.
+
+        Automatically called when the object is about to be destroyed. Performs
+        emergency cleanup to ensure the sing-box process is terminated and all
+        resources are released.
+
+        Note:
+            While this provides a safety net, it's better to explicitly call stop()
+            or use the context manager pattern for predictable cleanup timing.
+        """
         try:
             if self.singbox_process and self.singbox_process.poll() is None:
                 self._emergency_cleanup()
@@ -1878,9 +2628,62 @@ default_request_module = _import_request_module()
 
 
 class SingBoxClient:
-    "HTTP client for SingBox"
+    """HTTP client for making requests through SingBox proxies.
+
+    This class provides an interface for making HTTP requests through a SingBoxProxy
+    instance. It automatically configures proxy settings, handles retries, and supports both
+    curl-cffi and requests libraries as backends.
+
+    The client uses connection pooling via sessions and supports
+    automatic retry logic with exponential backoff. It can be used standalone or as part
+    of a SingBoxProxy instance.
+
+    Example:
+        Basic usage with SingBoxProxy:
+        >>> proxy = SingBoxProxy("vmess://...")
+        >>> client = SingBoxClient(client=proxy)
+        >>> response = client.get("https://api.ipify.org")
+        >>> print(response.text)
+
+        Standalone usage with custom retry settings:
+        >>> client = SingBoxClient(auto_retry=True, retry_times=5, timeout=30)
+        >>> response = client.post("https://example.com/api", json={"key": "value"})
+
+        Context manager usage:
+        >>> with SingBoxClient(client=proxy) as client:
+        ...     response = client.get("https://example.com")
+        ...     print(response.status_code)
+
+        Custom module usage:
+        >>> import requests
+        >>> client = SingBoxClient(module=requests, timeout=20)
+    """
 
     def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10, module=None):
+        """Initialize a SingBoxClient instance.
+
+        Args:
+            client: Optional SingBoxProxy instance to use for proxy configuration.
+                   If provided, the client will automatically use this proxy's settings
+                   for all requests.
+            auto_retry: Enable automatic retry on failed requests. When True, failed
+                       requests will be retried up to retry_times attempts with
+                       exponential backoff (default: True).
+            retry_times: Maximum number of retry attempts for failed requests. Only
+                        applies if auto_retry is True (default: 2).
+            timeout: Default timeout in seconds for all requests. Can be overridden
+                    per request by passing timeout in kwargs (default: 10).
+            module: HTTP library to use for making requests. Can be curl_cffi.requests
+                   or requests. If None, will auto-detect available library, preferring
+                   curl-cffi (default: None).
+
+        Raises:
+            ImportError: If no suitable HTTP request module is available.
+
+        Note:
+            The client preferentially uses curl-cffi if available, falling back to
+            requests. Install either 'curl-cffi' or 'requests' package to use this client.
+        """
         self.client = client
         self.proxy = client.proxy_for_requests if client else None
         self.auto_retry = auto_retry
@@ -1892,6 +2695,18 @@ class SingBoxClient:
         self._request_func = None
 
     def _ensure_request_callable(self):
+        """Ensure that a request callable function is available from the module.
+
+        Internal method that locates and caches the request function from the configured
+        HTTP library module. Handles both direct module attributes and nested attributes
+        (e.g., curl_cffi.requests.request).
+
+        Returns:
+            callable | None: The request function if found, None otherwise.
+
+        Note:
+            This method caches the result in self._request_func for performance.
+        """
         if self._request_func is None and self.module is not None:
             request_callable = getattr(self.module, "request", None)
             if request_callable is None:
@@ -1902,6 +2717,19 @@ class SingBoxClient:
         return self._request_func
 
     def _get_session(self):
+        """Get or create a session object for connection pooling.
+
+        Internal method that lazily creates and caches a session object from the
+        configured HTTP library. Sessions provide connection pooling for better
+        performance on multiple requests. This method is thread-safe.
+
+        Returns:
+            Session | None: Session object if available, None otherwise.
+
+        Note:
+            The session is cached in self._session and reused across requests.
+            Supports both requests.Session and curl_cffi.requests.Session.
+        """
         if self.module is None:
             return None
         if self._session is not None:
@@ -1931,6 +2759,16 @@ class SingBoxClient:
             return self._session
 
     def close(self):
+        """Close the session and release resources.
+
+        Closes the underlying HTTP session if it exists, releasing any pooled
+        connections. This method is automatically called by __del__ and __exit__,
+        but can be called manually if needed.
+
+        Note:
+            After calling close(), a new session will be created on the next request.
+            This method is thread-safe.
+        """
         if self._session and hasattr(self._session, "close"):
             try:
                 self._session.close()
@@ -1939,7 +2777,53 @@ class SingBoxClient:
         self._session = None
 
     def request(self, method: str, url: str, **kwargs):
-        "Make an HTTP request with retries"
+        """Make an HTTP request with automatic retry logic.
+
+        Core method for making HTTP requests through the configured proxy (if any).
+        Supports automatic retries with exponential backoff on failures. Automatically
+        configures timeout and proxy settings if not explicitly provided.
+
+        Args:
+            method: HTTP method to use (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, etc.).
+            url: Target URL for the request.
+            **kwargs: Additional arguments to pass to the underlying request function.
+                     Common arguments include:
+                     - headers (dict): HTTP headers
+                     - data: Request body (for POST, PUT, etc.)
+                     - json: JSON data to send (automatically sets Content-Type)
+                     - params (dict): URL query parameters
+                     - timeout (int/float): Override default timeout
+                     - proxies (dict): Override default proxy settings
+                     - retries (int): Override default retry count for this request
+                     - verify (bool): SSL certificate verification (default: True)
+                     - allow_redirects (bool): Follow redirects (default: True)
+
+        Returns:
+            Response: HTTP response object from the underlying library.
+
+        Raises:
+            ImportError: If no HTTP request module is available.
+            HTTPError: If the request fails after all retry attempts.
+            Timeout: If the request times out.
+            ConnectionError: If connection to the server fails.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.request("GET", "https://api.ipify.org")
+            >>> print(response.text)
+
+            >>> response = client.request("POST", "https://example.com/api",
+            ...                          json={"key": "value"},
+            ...                          headers={"Authorization": "Bearer token"})
+
+            >>> # Disable retries for a specific request
+            >>> response = client.request("GET", "https://example.com", retries=0)
+
+        Note:
+            - Retries use exponential backoff: 0.2s, 0.4s, 0.6s, ... up to 1s max
+            - The 'retries' kwarg overrides the instance's retry_times setting
+            - Failed requests that exhaust retries will raise the last exception
+        """
         start_time = time.time()
         if self.module is None:
             raise ImportError("No HTTP request module available. Please install 'curl-cffi' or 'requests'.")
@@ -1973,16 +2857,332 @@ class SingBoxClient:
                 raise e
 
     def get(self, url, **kwargs):
+        """Make a GET request.
+
+        Method for making GET requests. Equivalent to calling
+        request("GET", url, **kwargs).
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.get("https://api.ipify.org")
+            >>> print(response.text)
+
+            >>> # With query parameters
+            >>> response = client.get("https://example.com/api", params={"key": "value"})
+        """
         return self.request("GET", url, **kwargs)
 
     def post(self, url, **kwargs):
+        """Make a POST request.
+
+        Method for making POST requests. Equivalent to calling
+        request("POST", url, **kwargs).
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request(). Common kwargs:
+                     - data: Form data or raw body
+                     - json: JSON data (automatically sets Content-Type)
+                     - files: Files to upload
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.post("https://example.com/api", json={"key": "value"})
+
+            >>> # With form data
+            >>> response = client.post("https://example.com/form",
+            ...                       data={"field1": "value1", "field2": "value2"})
+        """
         return self.request("POST", url, **kwargs)
 
+    def put(self, url, **kwargs):
+        """Make a PUT request.
+
+        Method for making PUT requests. Equivalent to calling
+        request("PUT", url, **kwargs).
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.put("https://example.com/api/resource/123",
+            ...                       json={"updated": "data"})
+        """
+        return self.request("PUT", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        """Make a DELETE request.
+
+        Method for making DELETE requests. Equivalent to calling
+        request("DELETE", url, **kwargs).
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.delete("https://example.com/api/resource/123")
+        """
+        return self.request("DELETE", url, **kwargs)
+
+    def patch(self, url, **kwargs):
+        """Make a PATCH request.
+
+        Method for making PATCH requests. Equivalent to calling
+        request("PATCH", url, **kwargs).
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.patch("https://example.com/api/resource/123",
+            ...                         json={"field": "updated_value"})
+        """
+        return self.request("PATCH", url, **kwargs)
+
     def head(self, url, **kwargs):
+        """Make a HEAD request.
+
+        Method for making HEAD requests. Equivalent to calling
+        request("HEAD", url, **kwargs). HEAD requests are like GET but only
+        return headers without the response body.
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object (without body content).
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.head("https://example.com/large-file.zip")
+            >>> print(f"Content-Length: {response.headers.get('Content-Length')}")
+        """
         return self.request("HEAD", url, **kwargs)
 
+    def options(self, url, **kwargs):
+        """Make an OPTIONS request.
+
+        Method for making OPTIONS requests. Equivalent to calling
+        request("OPTIONS", url, **kwargs). OPTIONS requests are used to check
+        which HTTP methods are supported by a server.
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            Response: HTTP response object.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> response = client.options("https://example.com/api")
+            >>> print(f"Allowed methods: {response.headers.get('Allow')}")
+        """
+        return self.request("OPTIONS", url, **kwargs)
+
+    def download(self, url, destination, chunk_size=8192, **kwargs):
+        """Download a file from a URL to a local destination.
+
+        Downloads large files efficiently using streaming to avoid loading
+        the entire file into memory. Shows progress if logging is enabled.
+
+        Args:
+            url: URL of the file to download.
+            destination: Local file path where the file should be saved.
+            chunk_size: Size of chunks to read/write at a time in bytes (default: 8192).
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            str: Path to the downloaded file (same as destination).
+
+        Raises:
+            IOError: If file cannot be written.
+            HTTPError: If download request fails.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> client.download("https://example.com/file.zip", "/tmp/file.zip")
+            '/tmp/file.zip'
+
+            >>> # With custom chunk size
+            >>> client.download("https://example.com/bigfile.iso",
+            ...                "/tmp/bigfile.iso",
+            ...                chunk_size=65536)
+        """
+        kwargs.setdefault("stream", True)
+        response = self.request("GET", url, **kwargs)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded = 0
+
+        with open(destination, "wb") as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = (downloaded / total_size) * 100
+                        logger.debug(f"Download progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
+
+        logger.info(f"Downloaded {url} to {destination} ({downloaded} bytes)")
+        return destination
+
+    def get_json(self, url, **kwargs):
+        """Make a GET request and parse JSON response.
+
+        Convenience method that combines a GET request with JSON parsing.
+
+        Args:
+            url: Target URL for the request.
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            dict | list: Parsed JSON response.
+
+        Raises:
+            JSONDecodeError: If response is not valid JSON.
+            HTTPError: If request fails.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> data = client.get_json("https://api.example.com/data")
+            >>> print(data["key"])
+        """
+        response = self.get(url, **kwargs)
+        return response.json()
+
+    def post_json(self, url, json_data=None, **kwargs):
+        """Make a POST request with JSON data and parse JSON response.
+
+        Convenience method that combines a POST request with JSON input/output.
+
+        Args:
+            url: Target URL for the request.
+            json_data: JSON-serializable data to send (dict, list, etc.).
+            **kwargs: Additional arguments passed to request().
+
+        Returns:
+            dict | list: Parsed JSON response.
+
+        Raises:
+            JSONDecodeError: If response is not valid JSON.
+            HTTPError: If request fails.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> result = client.post_json("https://api.example.com/endpoint",
+            ...                          json_data={"key": "value"})
+            >>> print(result["status"])
+        """
+        response = self.post(url, json=json_data, **kwargs)
+        return response.json()
+
+    @property
+    def is_session_active(self):
+        """Check if a session is currently active.
+
+        Returns:
+            bool: True if session exists and is not None, False otherwise.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy)
+            >>> print(client.is_session_active)
+            False
+            >>> client.get("https://example.com")
+            >>> print(client.is_session_active)
+            True
+        """
+        return self._session is not None
+
+    def __repr__(self):
+        """Return a detailed string representation of the client.
+
+        Returns:
+            str: Representation string with key configuration details.
+
+        Example:
+            >>> client = SingBoxClient(client=proxy, timeout=20)
+            >>> print(repr(client))
+            <SingBoxClient proxy=True timeout=20 auto_retry=True retry_times=2 session=True>
+        """
+        return (
+            f"<SingBoxClient proxy={self.proxy is not None} "
+            f"timeout={self.timeout} auto_retry={self.auto_retry} "
+            f"retry_times={self.retry_times} session={self.is_session_active}>"
+        )
+
+    def __enter__(self):
+        """Context manager entry.
+
+        Allows using SingBoxClient with the 'with' statement for automatic cleanup.
+
+        Returns:
+            SingBoxClient: Returns self for use in the context.
+
+        Example:
+            >>> with SingBoxClient(client=proxy) as client:
+            ...     response = client.get("https://example.com")
+            ...     print(response.text)
+            # Session is automatically closed after the block
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit.
+
+        Automatically closes the session when exiting the 'with' block.
+
+        Args:
+            exc_type: Exception type if an exception occurred, None otherwise.
+            exc_val: Exception value if an exception occurred, None otherwise.
+            exc_tb: Exception traceback if an exception occurred, None otherwise.
+
+        Returns:
+            bool: False to propagate any exception that occurred in the context.
+        """
+        try:
+            self.close()
+        except Exception:
+            pass
+        return False
+
     def __del__(self):
-        "Ensure resources are cleaned up when the object is garbage collected."
+        """Ensure resources are cleaned up when the object is garbage collected.
+
+        Automatically called when the object is about to be destroyed. Closes
+        the session and stops the associated proxy client if any.
+
+        Note:
+            While this provides a safety net, it's better to explicitly call close()
+            or use the context manager pattern for predictable cleanup timing.
+        """
         try:
             self.close()
         except Exception:
