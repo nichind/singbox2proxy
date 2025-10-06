@@ -131,7 +131,7 @@ Examples:
             except Exception as e:
                 print(f"Proxy test failed: {str(e)}")
             sys.exit(0)
-            
+
         print("\nProxy is running. Press Ctrl+C to stop.")
 
         # Keep the script running
@@ -152,7 +152,7 @@ Examples:
             except Exception:
                 pass
         print("Proxy stopped.")
-        
+
     sys.exit(1)
 
 
