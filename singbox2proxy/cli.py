@@ -3,7 +3,7 @@ import sys
 import time
 import signal
 import json
-from .base import SingBoxProxy, enable_logging, disable_logging
+from .base import SingBoxProxy, default_core, enable_logging, disable_logging
 import logging
 
 
@@ -42,9 +42,11 @@ Examples:
 
     parser.add_argument("--quiet", "-q", action="store_true", help="Disable all logging")
 
-    parser.add_argument("--test", action="store_true", help="Test the proxy by making a request to ipify.org")
+    parser.add_argument("--test", "-T", action="store_true", help="Test the proxy by making a request to ipify.org")
 
-    parser.add_argument("--output-config", help="Save generated configuration to file")
+    parser.add_argument("--output-config", "-o", help="Save generated configuration to file")
+
+    parser.add_argument("--cmd", "-C", help="Run a command with sing-box core executable")
 
     args = parser.parse_args()
 
@@ -59,6 +61,10 @@ Examples:
     # Register signal handler
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
+    if args.cmd:
+        print(f"sing-box core at {default_core.executable} is running command: {args.cmd}")
+        print(default_core.run_command_output(args.cmd))
 
     try:
         proxies = []
@@ -151,7 +157,6 @@ Examples:
                 proxy.stop()
             except Exception:
                 pass
-        print("Proxy stopped.")
 
     sys.exit(1)
 

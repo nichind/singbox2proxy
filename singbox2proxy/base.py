@@ -114,21 +114,21 @@ atexit.register(_cleanup_all_processes)
 
 class SingBoxCore:
     """Manages the sing-box executable and its lifecycle.
-    
+
     This class is responsible for locating, installing (if needed), and providing
     access to the sing-box executable. It handles automatic detection of sing-box
     in the system PATH, and can automatically install it via package managers or
     the official installation script if not found.
-    
+
     The class provides methods to:
     - Check if sing-box is installed and accessible
     - Get version information
     - Run sing-box commands
     - Install sing-box automatically via various methods
-    
+
     Attributes:
         executable (str): Path or command name of the sing-box executable.
-    
+
     Example:
         Using default core (auto-detect or install):
         >>> core = SingBoxCore()
@@ -136,12 +136,12 @@ class SingBoxCore:
         1.8.0
         >>> print(core.is_available())
         True
-        
+
         Using custom executable path:
         >>> core = SingBoxCore(executable="/usr/local/bin/sing-box")
         >>> info = core.get_version_info()
         >>> print(info['version'])
-        
+
         Running sing-box commands:
         >>> result = core.run_command(["check", "-c", "config.json"])
         >>> print(result.returncode)
@@ -149,15 +149,15 @@ class SingBoxCore:
 
     def __init__(self, executable: os.PathLike = None):
         """Initialize a SingBoxCore instance.
-        
+
         Args:
             executable: Optional path to a specific sing-box executable. If provided,
                        the file must exist. If None, the class will attempt to find
                        sing-box in PATH or install it automatically.
-        
+
         Raises:
             FileNotFoundError: If a custom executable path is provided but doesn't exist.
-        
+
         Note:
             When no executable is specified, this will attempt to:
             1. Find sing-box in system PATH
@@ -174,15 +174,15 @@ class SingBoxCore:
 
     def _ensure_executable(self) -> str:
         """Ensure that the sing-box executable is available.
-        
+
         This method attempts to locate or install sing-box through multiple strategies:
         1. Check if sing-box is available in system PATH
         2. Install via official install.sh script (Unix-like systems only)
         3. Install via package managers (apt, dnf, pacman, brew, scoop, etc.)
-        
+
         Returns:
             str: Path or command name to the sing-box executable, or None if not found.
-        
+
         Note:
             Installation attempts are logged at INFO level. If all methods fail,
             a warning is logged and None is returned.
@@ -190,10 +190,10 @@ class SingBoxCore:
 
         def _test_terminal() -> bool:
             """Check if sing-box is accessible from terminal.
-            
+
             Attempts to run 'sing-box version' command to verify availability.
             On Windows, also checks for 'sing-box.exe'.
-            
+
             Returns:
                 bool: True if sing-box is accessible and working, False otherwise.
             """
@@ -239,16 +239,16 @@ class SingBoxCore:
 
             This uses the upstream install.sh which handles deb/rpm/Arch/OpenWrt/etc.
             Not available on Windows systems.
-            
+
             Args:
                 beta: If True, install the beta version instead of stable.
                 version: Specific version to install (e.g., "1.12.8"). If None, installs latest.
                 use_sudo: If True, prepends sudo to the install command (for non-root users).
                 install_url: URL of the installation script (default: official sing-box script).
-            
+
             Returns:
                 bool: True if installation succeeded, False otherwise.
-            
+
             Raises:
                 RuntimeError: If the installation script cannot be downloaded.
             """
@@ -305,12 +305,12 @@ class SingBoxCore:
 
         def _install_via_package_manager() -> bool:
             """Attempt to install sing-box using common package managers.
-            
+
             Supports multiple package managers across different platforms:
             - Windows: scoop, choco, winget
             - macOS: brew
             - Linux: apt, dnf, yum, pacman, yay, paru, apk, nix-env, pkg
-            
+
             The function will attempt all available package managers until one succeeds.
             Commands requiring root privileges will automatically use sudo if available.
 
@@ -498,7 +498,7 @@ class SingBoxCore:
 
     def _version(self):
         """Internal method to retrieve sing-box version string.
-        
+
         Returns:
             str | None: Version string if available, None otherwise.
         """
@@ -526,42 +526,42 @@ class SingBoxCore:
     @property
     def version(self):
         """Get the sing-box executable version.
-        
+
         Returns:
             str | None: Version string (e.g., "1.12.8") or None if unavailable.
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> print(core.version)
             1.8.0
         """
         return self._version()
-    
+
     def is_available(self) -> bool:
         """Check if the sing-box executable is available and working.
-        
+
         Returns:
             bool: True if sing-box can be executed, False otherwise.
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> if core.is_available():
             ...     print("sing-box is ready to use")
         """
         return self.executable is not None and self._version() is not None
-    
+
     def get_version_info(self) -> dict:
         """Get detailed version information from sing-box.
-        
+
         Parses the version output to extract structured information including
         version number, build tags, and other metadata if available.
-        
+
         Returns:
             dict: Dictionary containing version information with keys:
                   - 'version': Version string
                   - 'raw': Raw version output
                   - 'available': Boolean indicating if sing-box is working
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> info = core.get_version_info()
@@ -575,23 +575,23 @@ class SingBoxCore:
             "available": version_str is not None,
             "executable": self.executable,
         }
-    
-    def run_command(self, args: list[str], timeout: int = 30, **kwargs) -> subprocess.CompletedProcess:
+
+    def run_command(self, args: list[str] | str, timeout: int = 30, **kwargs) -> subprocess.CompletedProcess:
         """Run a sing-box command with the specified arguments.
-        
+
         Args:
             args: List of command arguments (e.g., ["check", "-c", "config.json"]).
             timeout: Maximum time in seconds to wait for command completion.
             **kwargs: Additional keyword arguments to pass to subprocess.run.
-        
+
         Returns:
             subprocess.CompletedProcess: Result of the command execution.
-        
+
         Raises:
             RuntimeError: If sing-box executable is not available.
             subprocess.TimeoutExpired: If the command times out.
             subprocess.CalledProcessError: If check=True and command fails.
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> result = core.run_command(["check", "-c", "config.json"])
@@ -600,29 +600,55 @@ class SingBoxCore:
         """
         if not self.executable:
             raise RuntimeError("sing-box executable is not available")
-        
+
+        if isinstance(args, str):
+            args = [args]
         cmd = [self.executable] + args
-        
+
         # Set defaults for kwargs
         kwargs.setdefault("timeout", timeout)
         kwargs.setdefault("capture_output", True)
         kwargs.setdefault("text", True)
-        
+
         if os.name == "nt":
             kwargs.setdefault("shell", True)
-        
+
         return subprocess.run(cmd, **kwargs)
-    
+
+    def run_command_output(self, args: list[str] | str, timeout: int = 30, **kwargs) -> str:
+        """Run a sing-box command and return its standard output as a string.
+
+        Args:
+            args: List of command arguments (e.g., ["version"]).
+            timeout: Maximum time in seconds to wait for command completion.
+            **kwargs: Additional keyword arguments to pass to subprocess.run.
+
+        Returns:
+            str: Standard output from the command execution.
+
+        Raises:
+            RuntimeError: If sing-box executable is not available.
+            subprocess.TimeoutExpired: If the command times out.
+            subprocess.CalledProcessError: If check=True and command fails.
+
+        Example:
+            >>> core = SingBoxCore()
+            >>> version_output = core.run_command_output(["version"])
+            >>> print(version_output)
+        """
+        result = self.run_command(args, timeout=timeout, **kwargs)
+        return result.stdout if result.stdout else ""
+
     def check_config(self, config_path: os.PathLike | str) -> tuple[bool, str]:
         """Check if a sing-box configuration file is valid.
-        
+
         Args:
             config_path: Path to the configuration file to validate.
-        
+
         Returns:
             tuple[bool, str]: A tuple of (is_valid, message) where is_valid is True
                             if the config is valid, and message contains output or error info.
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> is_valid, msg = core.check_config("config.json")
@@ -633,7 +659,7 @@ class SingBoxCore:
         """
         if not self.executable:
             return False, "sing-box executable is not available"
-        
+
         try:
             result = self.run_command(["check", "-c", str(config_path)], timeout=10)
             if result.returncode == 0:
@@ -644,17 +670,17 @@ class SingBoxCore:
             return False, "Configuration check timed out"
         except Exception as e:
             return False, f"Error checking configuration: {e}"
-    
+
     def format_config(self, config_path: os.PathLike | str, output_path: os.PathLike | str = None) -> tuple[bool, str]:
         """Format a sing-box configuration file.
-        
+
         Args:
             config_path: Path to the configuration file to format.
             output_path: Optional path to write formatted config. If None, formats in-place.
-        
+
         Returns:
             tuple[bool, str]: A tuple of (success, message).
-        
+
         Example:
             >>> core = SingBoxCore()
             >>> success, msg = core.format_config("config.json")
@@ -662,14 +688,14 @@ class SingBoxCore:
         """
         if not self.executable:
             return False, "sing-box executable is not available"
-        
+
         try:
             args = ["format", "-c", str(config_path)]
             if output_path:
                 args.extend(["-w", str(output_path)])
             else:
                 args.append("-w")
-            
+
             result = self.run_command(args, timeout=10)
             if result.returncode == 0:
                 return True, "Configuration formatted successfully"
@@ -677,19 +703,19 @@ class SingBoxCore:
                 return False, result.stderr or result.stdout or "Format failed"
         except Exception as e:
             return False, f"Error formatting configuration: {e}"
-    
+
     def __repr__(self) -> str:
         """Return a detailed string representation of the SingBoxCore instance.
-        
+
         Returns:
             str: String representation showing executable path and version.
         """
         version = self._version()
         return f"<SingBoxCore executable={self.executable!r} version={version!r}>"
-    
+
     def __str__(self) -> str:
         """Return a readble string representation.
-        
+
         Returns:
             str: String showing version or unavailable status.
         """
@@ -953,7 +979,7 @@ class SingBoxProxy:
         """Get the captured stdout from the sing-box process.
 
         Returns all standard output text produced by the sing-box process since it started.
-       
+
         Returns:
             str: All stdout output from the sing-box process.
         """
