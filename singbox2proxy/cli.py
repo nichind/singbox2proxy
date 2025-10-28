@@ -3,6 +3,7 @@ import sys
 import time
 import signal
 import json
+import os
 from .base import SingBoxProxy, default_core, enable_logging, disable_logging
 import logging
 
@@ -25,6 +26,9 @@ Examples:
   singbox2proxy "ss://..." --http-port 8080 --socks-port 1080
   singbox2proxy "trojan://..." --socks-port False
   singbox2proxy "hy2://..." --verbose --test
+  singbox2proxy "vless://..." --set-system-proxy
+  sudo singbox2proxy "vless://..." --tun
+  sudo singbox2proxy "vmess://..." --tun --tun-stack gvisor --tun-address 10.0.0.1/24
         """,
     )
 
@@ -48,6 +52,26 @@ Examples:
 
     parser.add_argument("--cmd", "-C", help="Run a command with sing-box core executable")
 
+    parser.add_argument("--tun", action="store_true", help="Enable TUN interface (system-wide VPN mode, requires root/admin privileges)")
+
+    parser.add_argument("--tun-address", default="172.19.0.1/30", help="TUN interface address (default: 172.19.0.1/30)")
+
+    parser.add_argument(
+        "--tun-stack", default="system", choices=["system", "gvisor", "mixed"], help="TUN stack implementation (default: system)"
+    )
+
+    parser.add_argument("--tun-mtu", type=int, default=9000, help="TUN interface MTU (default: 9000)")
+
+    parser.add_argument(
+        "--tun-auto-route", action="store_true", default=True, help="Automatically configure routing rules (default: enabled)"
+    )
+
+    parser.add_argument("--no-tun-auto-route", dest="tun_auto_route", action="store_false", help="Disable automatic routing rules")
+
+    parser.add_argument(
+        "--set-system-proxy", action="store_true", help="Set system proxy settings to use this proxy (applied on start, reverted on stop)"
+    )
+
     args = parser.parse_args()
 
     # Configure logging
@@ -66,6 +90,21 @@ Examples:
         print(f"sing-box core at {default_core.executable} is running command: {args.cmd}")
         print(default_core.run_command_output(args.cmd))
 
+    # Check for root/admin privileges if TUN mode is enabled
+    if args.tun:
+        if os.name == "nt":  # Windows
+            import ctypes
+
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                print("Error: TUN mode requires administrator privileges.", file=sys.stderr)
+                print("Please run this command as administrator.", file=sys.stderr)
+                sys.exit(1)
+        else:  # Unix-like systems
+            if os.geteuid() != 0:
+                print("Error: TUN mode requires root privileges.", file=sys.stderr)
+                print("Please run this command with sudo or as root.", file=sys.stderr)
+                sys.exit(1)
+
     try:
         proxies = []
 
@@ -74,7 +113,13 @@ Examples:
             print(f"Creating proxy chain with {len(args.urls)} proxies...")
 
             # Create first proxy
-            first_proxy = SingBoxProxy(args.urls[0], http_port=False, socks_port=None, config_only=args.config_only)
+            first_proxy = SingBoxProxy(
+                args.urls[0],
+                http_port=False,
+                socks_port=None,
+                config_only=args.config_only,
+                tun_enabled=False,
+            )
             proxies.append(first_proxy)
 
             # Create chained proxies
@@ -87,6 +132,12 @@ Examples:
                     socks_port=args.socks_port if is_last else None,
                     chain_proxy=chain_proxy,
                     config_only=args.config_only,
+                    tun_enabled=args.tun if is_last else False,
+                    tun_address=args.tun_address,
+                    tun_stack=args.tun_stack,
+                    tun_mtu=args.tun_mtu,
+                    tun_auto_route=args.tun_auto_route,
+                    set_system_proxy=args.set_system_proxy if is_last else False,
                 )
                 proxies.append(proxy)
                 chain_proxy = proxy
@@ -98,7 +149,18 @@ Examples:
             if len(args.urls) > 1:
                 print("Warning: Multiple URLs provided but --chain not specified. Using only the first URL.")
 
-            main_proxy = SingBoxProxy(args.urls[0], http_port=args.http_port, socks_port=args.socks_port, config_only=args.config_only)
+            main_proxy = SingBoxProxy(
+                args.urls[0],
+                http_port=args.http_port,
+                socks_port=args.socks_port,
+                config_only=args.config_only,
+                tun_enabled=args.tun,
+                tun_address=args.tun_address,
+                tun_stack=args.tun_stack,
+                tun_mtu=args.tun_mtu,
+                tun_auto_route=args.tun_auto_route,
+                set_system_proxy=args.set_system_proxy,
+            )
             proxies.append(main_proxy)
 
         def _save_config(config, path):
@@ -119,10 +181,16 @@ Examples:
 
         # Print proxy information
         print("Proxy started successfully")
+        if args.tun:
+            print("  TUN Interface: Enabled")
+            print(f"  TUN Address:   {args.tun_address}")
+            print(f"  TUN Stack:     {args.tun_stack}")
         if main_proxy.http_port:
             print(f"  HTTP Proxy:  {main_proxy.http_proxy_url}")
         if main_proxy.socks_port:
             print(f"  SOCKS Proxy: {main_proxy.socks5_proxy_url}")
+        if args.set_system_proxy:
+            print("  System Proxy: Configured (will be restored on stop)")
 
         # Test the proxy if requested
         if args.test:

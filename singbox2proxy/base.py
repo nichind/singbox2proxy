@@ -17,6 +17,7 @@ import weakref
 import shutil
 import sys
 from pathlib import Path
+import re
 
 
 _psutil_module = None
@@ -59,6 +60,457 @@ def enable_logging(level=logging.DEBUG):
 def disable_logging():
     """Disable library logging."""
     logger.setLevel(logging.CRITICAL + 1)
+
+
+class SystemProxyManager:
+    """Cross-platform system proxy manager.
+
+    Manages system-wide proxy settings on Windows, macOS, and Linux.
+    Automatically saves and restores previous proxy settings.
+    """
+
+    def __init__(self):
+        self.platform = sys.platform
+        self.original_settings = None
+        self._enabled = False
+
+    def set_proxy(self, http_proxy: str = None, socks_proxy: str = None, bypass_list: list = None):
+        """Set system proxy settings.
+
+        Args:
+            http_proxy: HTTP proxy URL (e.g., "http://127.0.0.1:8080")
+            socks_proxy: SOCKS5 proxy URL (e.g., "socks5://127.0.0.1:1080")
+            bypass_list: List of addresses to bypass (e.g., ["localhost", "127.0.0.1"])
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if self._enabled:
+            logger.warning("System proxy already set. Call restore_proxy() first.")
+            return False
+
+        # Save current settings
+        self.original_settings = self._get_current_settings()
+
+        try:
+            if self.platform == "win32":
+                return self._set_windows_proxy(http_proxy, socks_proxy, bypass_list)
+            elif self.platform == "darwin":
+                return self._set_macos_proxy(http_proxy, socks_proxy, bypass_list)
+            else:
+                return self._set_linux_proxy(http_proxy, socks_proxy, bypass_list)
+        except Exception as e:
+            logger.error(f"Failed to set system proxy: {e}")
+            return False
+
+    def restore_proxy(self):
+        """Restore original proxy settings.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not self._enabled:
+            logger.debug("System proxy not set, nothing to restore.")
+            return True
+
+        if self.original_settings is None:
+            logger.warning("No original settings saved.")
+            return False
+
+        try:
+            if self.platform == "win32":
+                return self._restore_windows_proxy()
+            elif self.platform == "darwin":
+                return self._restore_macos_proxy()
+            else:  # Linux
+                return self._restore_linux_proxy()
+        except Exception as e:
+            logger.error(f"Failed to restore system proxy: {e}")
+            return False
+        finally:
+            self._enabled = False
+            self.original_settings = None
+
+    def _get_current_settings(self):
+        """Get current system proxy settings."""
+        try:
+            if self.platform == "win32":
+                return self._get_windows_settings()
+            elif self.platform == "darwin":
+                return self._get_macos_settings()
+            else:  # Linux
+                return self._get_linux_settings()
+        except Exception as e:
+            logger.debug(f"Could not get current settings: {e}")
+            return {}
+
+    def _set_windows_proxy(self, http_proxy, socks_proxy, bypass_list):
+        """Set Windows proxy via registry."""
+        try:
+            import winreg
+        except ImportError:
+            logger.error("winreg module not available (Windows only)")
+            return False
+
+        try:
+            # Open registry key
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_WRITE
+            )
+
+            # Enable proxy
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+
+            # Set proxy server
+            if http_proxy:
+                # Extract host:port from URL
+                proxy_url = urllib.parse.urlparse(http_proxy)
+                proxy_addr = f"{proxy_url.hostname}:{proxy_url.port}"
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_addr)
+
+            # Set bypass list
+            if bypass_list:
+                bypass_str = ";".join(bypass_list)
+            else:
+                bypass_str = "localhost;127.*;10.*;172.16.*;172.31.*;192.168.*"
+            winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, bypass_str)
+
+            winreg.CloseKey(key)
+
+            # Notify system of settings change
+            self._notify_windows_settings_change()
+
+            self._enabled = True
+            logger.info(f"Windows system proxy set to {http_proxy}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to set Windows proxy: {e}")
+            return False
+
+    def _restore_windows_proxy(self):
+        """Restore Windows proxy settings."""
+        try:
+            import winreg
+        except ImportError:
+            return False
+
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_WRITE
+            )
+
+            # Restore settings
+            if self.original_settings:
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, self.original_settings.get("ProxyEnable", 0))
+                if "ProxyServer" in self.original_settings:
+                    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, self.original_settings["ProxyServer"])
+                if "ProxyOverride" in self.original_settings:
+                    winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, self.original_settings["ProxyOverride"])
+            else:
+                # Disable proxy
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+
+            winreg.CloseKey(key)
+            self._notify_windows_settings_change()
+
+            logger.info("Windows system proxy restored")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to restore Windows proxy: {e}")
+            return False
+
+    def _get_windows_settings(self):
+        """Get current Windows proxy settings."""
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_READ
+            )
+
+            settings = {}
+            try:
+                settings["ProxyEnable"] = winreg.QueryValueEx(key, "ProxyEnable")[0]
+            except FileNotFoundError:
+                settings["ProxyEnable"] = 0
+
+            try:
+                settings["ProxyServer"] = winreg.QueryValueEx(key, "ProxyServer")[0]
+            except FileNotFoundError:
+                pass
+
+            try:
+                settings["ProxyOverride"] = winreg.QueryValueEx(key, "ProxyOverride")[0]
+            except FileNotFoundError:
+                pass
+
+            winreg.CloseKey(key)
+            return settings
+
+        except Exception as e:
+            logger.debug(f"Could not get Windows settings: {e}")
+            return {}
+
+    def _notify_windows_settings_change(self):
+        """Notify Windows of Internet settings change."""
+        try:
+            import ctypes
+
+            INTERNET_OPTION_SETTINGS_CHANGED = 39
+            INTERNET_OPTION_REFRESH = 37
+            internet_set_option = ctypes.windll.Wininet.InternetSetOptionW
+            internet_set_option(0, INTERNET_OPTION_SETTINGS_CHANGED, 0, 0)
+            internet_set_option(0, INTERNET_OPTION_REFRESH, 0, 0)
+        except Exception as e:
+            logger.debug(f"Could not notify Windows of settings change: {e}")
+
+    def _set_macos_proxy(self, http_proxy, socks_proxy, bypass_list):
+        """Set macOS proxy via networksetup."""
+        try:
+            # Get active network service
+            result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True, check=True)
+
+            # Find active service (usually Wi-Fi or Ethernet)
+            services = [line.strip() for line in result.stdout.split("\n")[1:] if line.strip() and not line.startswith("*")]
+
+            if not services:
+                logger.error("No network services found")
+                return False
+
+            # Use first available service
+            service = services[0]
+            logger.debug(f"Using network service: {service}")
+
+            success = True
+
+            if http_proxy:
+                proxy_url = urllib.parse.urlparse(http_proxy)
+                # Set HTTP proxy
+                result = subprocess.run(
+                    ["networksetup", "-setwebproxy", service, proxy_url.hostname, str(proxy_url.port)], capture_output=True, text=True
+                )
+                if result.returncode != 0:
+                    logger.error(f"Failed to set HTTP proxy: {result.stderr}")
+                    success = False
+                else:
+                    # Enable HTTP proxy
+                    subprocess.run(["networksetup", "-setwebproxystate", service, "on"], capture_output=True, text=True)
+
+                # Set HTTPS proxy (same as HTTP)
+                subprocess.run(
+                    ["networksetup", "-setsecurewebproxy", service, proxy_url.hostname, str(proxy_url.port)], capture_output=True, text=True
+                )
+                subprocess.run(["networksetup", "-setsecurewebproxystate", service, "on"], capture_output=True, text=True)
+
+            if socks_proxy:
+                proxy_url = urllib.parse.urlparse(socks_proxy)
+                result = subprocess.run(
+                    ["networksetup", "-setsocksfirewallproxy", service, proxy_url.hostname, str(proxy_url.port)],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.error(f"Failed to set SOCKS proxy: {result.stderr}")
+                    success = False
+                else:
+                    subprocess.run(["networksetup", "-setsocksfirewallproxystate", service, "on"], capture_output=True, text=True)
+
+            # Set bypass domains
+            if bypass_list:
+                bypass_str = " ".join([f'"{domain}"' for domain in bypass_list])
+            else:
+                bypass_str = '"localhost" "127.0.0.1" "*.local"'
+
+            subprocess.run(f'networksetup -setproxybypassdomains "{service}" {bypass_str}', shell=True, capture_output=True, text=True)
+
+            if success:
+                self._enabled = True
+                self.original_settings["service"] = service
+                logger.info(f"macOS system proxy set on service: {service}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Failed to set macOS proxy: {e}")
+            return False
+
+    def _restore_macos_proxy(self):
+        """Restore macOS proxy settings."""
+        try:
+            service = self.original_settings.get("service")
+            if not service:
+                # Try to get current service
+                result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True, check=True)
+                services = [line.strip() for line in result.stdout.split("\n")[1:] if line.strip() and not line.startswith("*")]
+                if services:
+                    service = services[0]
+                else:
+                    logger.error("No network service found")
+                    return False
+
+            # Disable proxies
+            subprocess.run(["networksetup", "-setwebproxystate", service, "off"], capture_output=True, text=True)
+            subprocess.run(["networksetup", "-setsecurewebproxystate", service, "off"], capture_output=True, text=True)
+            subprocess.run(["networksetup", "-setsocksfirewallproxystate", service, "off"], capture_output=True, text=True)
+
+            logger.info(f"macOS system proxy restored on service: {service}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to restore macOS proxy: {e}")
+            return False
+
+    def _get_macos_settings(self):
+        """Get current macOS proxy settings."""
+        settings = {}
+        try:
+            result = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True, check=True)
+            services = [line.strip() for line in result.stdout.split("\n")[1:] if line.strip() and not line.startswith("*")]
+            if services:
+                settings["service"] = services[0]
+        except Exception as e:
+            logger.debug(f"Could not get macOS settings: {e}")
+
+        return settings
+
+    def _set_linux_proxy(self, http_proxy, socks_proxy, bypass_list):
+        """Set Linux proxy via environment variables and GNOME/KDE settings."""
+        # For Linux, we'll set environment variables and try to configure
+        # GNOME/KDE settings if available
+
+        success = False
+
+        # Try GNOME settings (gsettings)
+        try:
+            if http_proxy:
+                proxy_url = urllib.parse.urlparse(http_proxy)
+
+                subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"], capture_output=True, text=True, check=True)
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.system.proxy.http", "host", proxy_url.hostname],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.system.proxy.http", "port", str(proxy_url.port)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.system.proxy.https", "host", proxy_url.hostname],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.system.proxy.https", "port", str(proxy_url.port)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+                if bypass_list:
+                    bypass_str = str(bypass_list)
+                else:
+                    bypass_str = "['localhost', '127.0.0.0/8', '::1']"
+
+                subprocess.run(
+                    ["gsettings", "set", "org.gnome.system.proxy", "ignore-hosts", bypass_str], capture_output=True, text=True, check=True
+                )
+
+                success = True
+                logger.info("GNOME system proxy set")
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.debug(f"GNOME settings not available or failed: {e}")
+
+        # Try KDE settings (kwriteconfig5)
+        try:
+            if http_proxy and not success:
+                proxy_url = urllib.parse.urlparse(http_proxy)
+                proxy_str = f"http://{proxy_url.hostname}:{proxy_url.port}"
+
+                subprocess.run(
+                    ["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "1"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                subprocess.run(
+                    ["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy", proxy_str],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                subprocess.run(
+                    ["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", proxy_str],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+                # Notify KDE of changes
+                subprocess.run(
+                    ["dbus-send", "--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:''"],
+                    capture_output=True,
+                    text=True,
+                )
+
+                success = True
+                logger.info("KDE system proxy set")
+
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            logger.debug(f"KDE settings not available or failed: {e}")
+
+        if not success:
+            logger.warning(
+                "Could not set system proxy via GNOME or KDE. "
+                "You may need to set environment variables manually: "
+                f"export http_proxy={http_proxy} https_proxy={http_proxy}"
+            )
+
+        self._enabled = success
+        return success
+
+    def _restore_linux_proxy(self):
+        """Restore Linux proxy settings."""
+        success = False
+
+        # Try GNOME
+        try:
+            subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], capture_output=True, text=True, check=True)
+            success = True
+            logger.info("GNOME system proxy restored")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("GNOME settings not available")
+
+        # Try KDE
+        try:
+            subprocess.run(
+                ["kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "ProxyType", "0"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            subprocess.run(
+                ["dbus-send", "--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:''"],
+                capture_output=True,
+                text=True,
+            )
+            success = True
+            logger.info("KDE system proxy restored")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.debug("KDE settings not available")
+
+        return success
+
+    def _get_linux_settings(self):
+        """Get current Linux proxy settings."""
+        return {}  # Linux settings vary too much to reliably store/restore
 
 
 # Global registry to track all active processes
@@ -476,12 +928,216 @@ class SingBoxCore:
             logger.error("All package manager installation attempts failed")
             return False
 
+        def _env_bool(*names: str, default: bool = False) -> bool:
+            truthy = {"1", "true", "yes", "on", "y", "t"}
+            falsy = {"0", "false", "no", "off", "n", "f"}
+            for name in names:
+                val = os.getenv(name)
+                if val is None:
+                    continue
+                v = val.strip().lower()
+                if v in truthy:
+                    return True
+                if v in falsy:
+                    return False
+            return default
+
+        def _env_str(*names: str) -> str | None:
+            for name in names:
+                val = os.getenv(name)
+                if val and val.strip():
+                    return val.strip()
+            return None
+
+        def _get_installed_version() -> str | None:
+            """Try to obtain the currently installed sing-box version via CLI."""
+            try:
+                kwargs = {"capture_output": True, "text": True, "timeout": 2}
+                if os.name == "nt":
+                    kwargs["shell"] = True
+                result = subprocess.run(["sing-box", "version"], **kwargs)
+                if result.returncode == 0 and result.stdout:
+                    for line in result.stdout.splitlines():
+                        if "version" in line.lower():
+                            return line.strip()
+                    return result.stdout.strip()
+            except Exception:
+                pass
+            return None
+
+        def _normalize_version(ver: str | None) -> str | None:
+            if not ver:
+                return None
+            # extract semantic version like 1.12.9
+            m = re.search(r"(\d+\.\d+\.\d+)", ver)
+            if m:
+                return m.group(1)
+            # fallback: strip leading 'v' and whitespace
+            return ver.strip().lstrip("vV") if ver else None
+
+        def _uninstall_via_package_manager() -> bool:
+            """Attempt to uninstall sing-box using package managers. Returns True if any succeeded."""
+            logger.info("Attempting to uninstall existing sing-box via package manager")
+            cmds: list[list[str]] = []
+
+            try:
+                if os.name == "nt":
+                    if shutil.which("scoop"):
+                        cmds.append(["scoop", "uninstall", "sing-box"])
+                    if shutil.which("choco"):
+                        cmds.append(["choco", "uninstall", "sing-box", "-y"])
+                    if shutil.which("winget"):
+                        cmds.append(["winget", "uninstall", "sing-box", "--accept-package-agreements", "--accept-source-agreements"])
+                elif sys.platform == "darwin":
+                    if shutil.which("brew"):
+                        cmds.append(["brew", "uninstall", "sing-box"])
+                else:
+                    # Arch family
+                    if shutil.which("paru"):
+                        cmds.append(["paru", "-Rns", "--noconfirm", "sing-box"])
+                    if shutil.which("yay"):
+                        cmds.append(["yay", "-Rns", "--noconfirm", "sing-box"])
+                    if shutil.which("pacman"):
+                        cmds.append(["pacman", "-Rns", "--noconfirm", "sing-box"])
+
+                    # Debian/Ubuntu
+                    if shutil.which("apt"):
+                        cmds.append(["apt", "remove", "-y", "sing-box"])
+                        cmds.append(["apt", "purge", "-y", "sing-box"])
+                    if shutil.which("apt-get"):
+                        cmds.append(["apt-get", "remove", "-y", "sing-box"])
+                        cmds.append(["apt-get", "purge", "-y", "sing-box"])
+
+                    # Alpine
+                    if shutil.which("apk"):
+                        cmds.append(["apk", "del", "sing-box"])
+
+                    # Fedora / RHEL
+                    if shutil.which("dnf"):
+                        cmds.append(["dnf", "remove", "-y", "sing-box"])
+                    if shutil.which("yum"):
+                        cmds.append(["yum", "remove", "-y", "sing-box"])
+
+                    # Nix
+                    if shutil.which("nix-env"):
+                        # Try both possible names
+                        cmds.append(["nix-env", "-e", "sing-box"])
+                        cmds.append(["nix-env", "-e", "nixos.sing-box"])
+
+                    # Termux / FreeBSD pkg
+                    if shutil.which("pkg"):
+                        cmds.append(["pkg", "delete", "-y", "sing-box"])
+
+                    # Linuxbrew
+                    if shutil.which("brew"):
+                        cmds.append(["brew", "uninstall", "sing-box"])
+            except Exception as e:
+                logger.warning(f"Error preparing uninstall commands: {e}")
+                return False
+
+            any_success = False
+            root_required = {"apt", "apt-get", "pacman", "dnf", "yum", "apk", "pkg"}
+            for cmd in cmds:
+                final_cmd = list(cmd)
+                if cmd and cmd[0] in root_required:
+                    needs_sudo = False
+                    try:
+                        if hasattr(os, "geteuid") and os.geteuid() != 0:
+                            needs_sudo = True
+                    except Exception:
+                        needs_sudo = True
+                    if needs_sudo:
+                        sudo_path = shutil.which("sudo")
+                        if sudo_path:
+                            final_cmd.insert(0, sudo_path)
+                        else:
+                            logger.info(f"Skipping uninstall needing root (sudo not found): {' '.join(cmd)}")
+                            continue
+                try:
+                    logger.info(f"Running uninstall: {' '.join(final_cmd)}")
+                    proc = subprocess.run(final_cmd, capture_output=True, text=True, timeout=600)
+                    if proc.returncode == 0:
+                        any_success = True
+                        logger.info("Uninstall command reported success")
+                        break
+                    else:
+                        logger.debug(f"Uninstall failed ({proc.returncode}): {proc.stderr or proc.stdout}")
+                except Exception as e:
+                    logger.debug(f"Error running uninstall {' '.join(final_cmd)}: {e}")
+            return any_success
+
+        # Read optional install.sh configuration and force flags from environment
+        beta_flag = _env_bool("SINGBOX_BETA_ENABLED", "SINGBOX_BETA", "SINGBOX_INSTALL_BETA", default=False)
+        version_str = _env_str("SINGBOX_VERSION", "SINGBOX_INSTALL_VERSION")
+        use_sudo_flag = _env_bool("SINGBOX_INSTALL_SUDO", "SINGBOX_SUDO", default=False)
+        install_url = _env_str("SINGBOX_INSTALL_URL") or "https://sing-box.app/install.sh"
+        force_flag = _env_bool(
+            "SINGBOX_FORCE_VERSION",
+            "SINGBOX_FORCE_REINSTALL",
+            "SINGBOX_FORCE",
+            "SINGBOX_FORCE_UPDATE",
+            default=False,
+        )
+        force_beta_flag = _env_bool("SINGBOX_FORCE_BETA", default=False)
+
+        # If already available, optionally enforce desired version/beta
         if _test_terminal():
+            if force_flag or force_beta_flag:
+                current_raw = _get_installed_version()
+                current_norm = _normalize_version(current_raw)
+                desired_norm = _normalize_version(version_str) if version_str else None
+
+                should_reinstall = False
+                if version_str and desired_norm and current_norm and desired_norm != current_norm:
+                    should_reinstall = True
+                    logger.info(f"Forcing reinstall to version {version_str} (current: {current_raw or current_norm})")
+                elif version_str and desired_norm and not current_norm:
+                    should_reinstall = True
+                    logger.info(f"Forcing reinstall to version {version_str} (current version unknown)")
+                elif not version_str and beta_flag and force_beta_flag:
+                    should_reinstall = True
+                    logger.info("Forcing reinstall to latest beta version")
+
+                if should_reinstall:
+                    # Best-effort uninstall first, then install desired
+                    try:
+                        _uninstall_via_package_manager()
+                    except Exception as e:
+                        logger.debug(f"Uninstall attempt skipped/failed: {e}")
+
+                    try:
+                        if _install_via_sh(
+                            beta=beta_flag and not version_str, version=version_str, use_sudo=use_sudo_flag, install_url=install_url
+                        ):
+                            # Verify
+                            if _test_terminal():
+                                new_ver = _normalize_version(_get_installed_version())
+                                if (version_str and new_ver == desired_norm) or (not version_str and beta_flag):
+                                    return "sing-box"
+                    except Exception as e:
+                        logger.warning(f"Forced reinstall via install.sh failed: {e}")
+
+                    # If forced and we couldn't ensure, fall through to try package manager install
             return "sing-box"
 
+        # Attempt install via install.sh using env configuration
         try:
-            if _install_via_sh():
+            if beta_flag or version_str or use_sudo_flag or os.getenv("SINGBOX_INSTALL_URL"):
+                logger.info(
+                    "Using install.sh with env overrides: beta=%s, version=%s, sudo=%s, url=%s",
+                    beta_flag,
+                    version_str,
+                    use_sudo_flag,
+                    install_url,
+                )
+            if _install_via_sh(beta=beta_flag and not version_str, version=version_str, use_sudo=use_sudo_flag, install_url=install_url):
                 if _test_terminal():
+                    # If a specific version was requested, verify match when force is set
+                    if version_str and force_flag:
+                        installed_norm = _normalize_version(_get_installed_version())
+                        desired_norm = _normalize_version(version_str)
+                        if installed_norm != desired_norm:
+                            logger.warning(f"Requested version {version_str} not detected after install.sh (installed: {installed_norm}).")
                     return "sing-box"
         except Exception as e:
             logger.warning(f"Failed to install sing-box via install script: {e}")
@@ -795,6 +1451,12 @@ class SingBoxProxy:
         config_directory: os.PathLike | str | None = None,
         client: "SingBoxClient" = None,
         core: "SingBoxCore" = None,
+        tun_enabled: bool = False,
+        tun_address: str = "172.19.0.1/30",
+        tun_stack: str = "system",
+        tun_mtu: int = 9000,
+        tun_auto_route: bool = True,
+        set_system_proxy: bool = False,
     ):
         """Initialize a SingBoxProxy instance.
 
@@ -818,6 +1480,14 @@ class SingBoxProxy:
                    is created. Set to False to disable client creation.
             core: Custom SingBoxCore instance specifying the sing-box executable. If None,
                  uses the default core (which auto-detects or installs sing-box).
+            tun_enabled: If True, creates a TUN interface for system-wide VPN. Requires
+                        root/administrator privileges. Default is False.
+            tun_address: IPv4 address and prefix for the TUN interface. Default is "172.19.0.1/30".
+            tun_stack: TUN stack implementation. Options: "system", "gvisor", "mixed". Default is "system".
+            tun_mtu: Maximum Transmission Unit for TUN interface. Default is 9000.
+            tun_auto_route: If True, automatically configure system routing rules. Default is True.
+            set_system_proxy: If True, automatically configure system-wide proxy settings to use
+                            this proxy. Settings are restored when the proxy is stopped. Default is False.
 
         Raises:
             TypeError: If config is not a string or path-like object.
@@ -859,6 +1529,17 @@ class SingBoxProxy:
         self.chain_proxy = chain_proxy
         self.config_file = Path(config_file) if config_file else None
         self.config_directory = Path(config_directory) if config_directory else None
+
+        # TUN configuration
+        self.tun_enabled = tun_enabled
+        self.tun_address = tun_address
+        self.tun_stack = tun_stack
+        self.tun_mtu = tun_mtu
+        self.tun_auto_route = tun_auto_route
+
+        # System proxy configuration
+        self.set_system_proxy = set_system_proxy
+        self._system_proxy_manager = None
 
         # Runtime state
         self.singbox_process = None
@@ -1758,6 +2439,22 @@ class SingBoxProxy:
                 "outbounds": outbounds,
             }
 
+            # Add TUN inbound if enabled
+            if self.tun_enabled:
+                tun_inbound = {
+                    "type": "tun",
+                    "tag": "tun-in",
+                    "interface_name": "tun0",
+                    "address": [self.tun_address] if isinstance(self.tun_address, str) else self.tun_address,
+                    "mtu": self.tun_mtu,
+                    "auto_route": self.tun_auto_route,
+                    "strict_route": True,
+                    "stack": self.tun_stack,
+                    "sniff": True,
+                    "sniff_override_destination": False,
+                }
+                config["inbounds"].append(tun_inbound)
+
             if self.socks_port:
                 config["inbounds"] += [
                     {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": self.socks_port, "users": []}
@@ -1924,6 +2621,54 @@ class SingBoxProxy:
         logger.error(error_msg)
         raise TimeoutError(error_msg)
 
+    def _setup_system_proxy(self):
+        """Setup system-wide proxy settings."""
+        try:
+            self._system_proxy_manager = SystemProxyManager()
+
+            http_proxy_url = None
+            socks_proxy_url = None
+
+            if self.http_port:
+                http_proxy_url = f"http://127.0.0.1:{self.http_port}"
+
+            if self.socks_port:
+                socks_proxy_url = f"socks5://127.0.0.1:{self.socks_port}"
+
+            # Use HTTP proxy if available, otherwise SOCKS
+            if http_proxy_url:
+                success = self._system_proxy_manager.set_proxy(
+                    http_proxy=http_proxy_url, bypass_list=["localhost", "127.0.0.1", "::1", "*.local"]
+                )
+            elif socks_proxy_url:
+                success = self._system_proxy_manager.set_proxy(
+                    socks_proxy=socks_proxy_url, bypass_list=["localhost", "127.0.0.1", "::1", "*.local"]
+                )
+            else:
+                logger.warning("No proxy ports available to set as system proxy")
+                return
+
+            if success:
+                logger.info(f"System proxy configured: {http_proxy_url or socks_proxy_url}")
+            else:
+                logger.warning("Failed to configure system proxy")
+
+        except Exception as e:
+            logger.error(f"Error setting up system proxy: {e}")
+
+    def _restore_system_proxy(self):
+        """Restore original system proxy settings."""
+        try:
+            if self._system_proxy_manager:
+                success = self._system_proxy_manager.restore_proxy()
+                if success:
+                    logger.info("System proxy settings restored")
+                else:
+                    logger.warning("Failed to restore system proxy settings")
+                self._system_proxy_manager = None
+        except Exception as e:
+            logger.error(f"Error restoring system proxy: {e}")
+
     def start(self):
         """Start the sing-box process with the generated configuration.
 
@@ -2002,6 +2747,11 @@ class SingBoxProxy:
                 self._check_proxy_ready(timeout=15)
                 self.running = True
                 logger.info(f"sing-box started successfully on SOCKS port {self.socks_port}, HTTP port {self.http_port}")
+
+                # Set system proxy if requested
+                if self.set_system_proxy:
+                    self._setup_system_proxy()
+
             except Exception:
                 # If checking fails, terminate the process and raise the exception
                 self._terminate_process(timeout=1)
@@ -2069,6 +2819,10 @@ class SingBoxProxy:
                 return
 
             try:
+                # Restore system proxy if it was set
+                if self._system_proxy_manager:
+                    self._restore_system_proxy()
+
                 if self.singbox_process is not None:
                     success = self._terminate_process(timeout=1)
                     if not success:
