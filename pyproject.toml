@@ -34,7 +34,7 @@ keywords = [
     "python",
     "cli"
 ]
-dependencies = ["psutil", "pysocks"]
+dependencies = []
 
 [project.scripts]
 singbox2proxy = "singbox2proxy.__main__:main"

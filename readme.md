@@ -1,12 +1,15 @@
-## singbox2proxy
+## singbox2proxy 
 
-Integrate sing-box proxies into your python applications with ease.
+[![Pip module installs total downloads](https://img.shields.io/pypi/dm/singbox2proxy.svg)](https://pypi.org/project/singbox2proxy/)[![Run Tests](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml) [![Upload Python Package to PyPI when a Release is Created](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml)
 
-singbox2proxy is basically a fork of [v2ray2proxy](https://github.com/nichind/v2ray2proxy) with enhanced perfomance and protocol support using [sing-box](https://github.com/SagerNet/sing-box) instead of xray-core.
+Integrate sing-box proxies into your python applications with ease on any device.
 
- [![Pip module installs total downloads](https://img.shields.io/pypi/dm/singbox2proxy.svg)](https://pypi.org/project/singbox2proxy/)[![Run Tests](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/build.yml) [![Upload Python Package to PyPI when a Release is Created](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml/badge.svg)](https://github.com/nichind/singbox2proxy/actions/workflows/publish.yml)
+- sing-box auto-install & easy management
+- zero dependencies for base functionality
+- seamless integration with existing applications
+- tuned for best performance and latency in mind
 
-#### Supported Protocols
+### Supported Protocols
 
 This module supports these sing-box protocols:
 
@@ -36,7 +39,7 @@ pip install singbox2proxy
 with [uv](https://pypi.org/project/uv/)
 
 ```shell
-uv install singbox2proxy 
+uv pip install singbox2proxy 
 ```
 
 build from source
@@ -49,7 +52,7 @@ pip install -e .
 
 ### Python Usage
 
-Using built-in [curl-cffi](https://pypi.org/project/curl-cffi/) or [requests](https://pypi.org/project/requests/) client
+Using built-in client powered by [curl-cffi](https://pypi.org/project/curl-cffi/) or [requests](https://pypi.org/project/requests/)
 
 ```python
 from singbox2proxy import SingBoxProxy
@@ -101,6 +104,35 @@ proxy2 = SingBoxProxy("vless://...", chain_proxy=proxy1)
 response = proxy2.request("GET", "https://api.ipify.org?format=json")
 print(response.status_code, response.text)  # 200, {"ip": "<proxy2's IP>"}
 # Here, requests made through `proxy2` will first go through `proxy1`, then proxy1 will forward the request to proxy2, and finally proxy2 will send the request to the target server.
+```
+
+#### TUN Mode (System-Wide VPN)
+
+Create a virtual network interface to route all system traffic through the proxy. This requires root/administrator privileges.
+
+> [!IMPORTANT]
+> Very experimental, use at your own risk.
+
+```python
+# Requires root/admin privileges
+proxy = SingBoxProxy("vless://...", tun_enabled=True)
+
+# All system traffic is now routed through the proxy
+# Use like a normal VPN connection
+```
+
+#### System Proxy Configuration
+
+Automatically configure your OS proxy settings. This is a great alternative to TUN mode when you don't have root access.
+
+> [!NOTE]
+> The system proxy settings will be restored to their original state when the `SingBoxProxy` instance is closed or goes out of scope, but multiple instances may interfere with each other, may be better to backup your initial settings before using this feature.
+
+```python
+# Automatically sets system proxy and restores on exit
+with SingBoxProxy("vless://...", set_system_proxy=True) as proxy:
+    # Your web browser and other apps will now use the proxy
+    print(f"System proxy configured to use {proxy.http_proxy_url}")
 ```
 
 ### CLI
@@ -168,6 +200,33 @@ Disable all logging:
 ```shell
 sb2p "hy2://..." --quiet
 ```
+
+#### TUN Mode (System-Wide VPN)
+
+Enable TUN mode to route all system traffic through the proxy.
+
+```shell
+# Linux/macOS (requires sudo)
+sudo sb2p "vless://..." --tun
+
+# Windows (run as Administrator)
+sb2p "vless://..." --tun
+```
+
+> [!IMPORTANT]
+> Very experimental, use at your own risk.
+
+#### System Proxy
+
+Automatically configure your OS to use the proxy.
+
+```shell
+# Set system proxy on start, restore on stop
+sb2p "vless://..." --set-system-proxy
+```
+
+> [!NOTE]
+> The system proxy settings will be restored to their original state when the `SingBoxProxy` instance is closed or goes out of scope, but multiple instances may interfere with each other, may be better to backup your initial settings before using this feature.
 
 ### Discaimer
 
