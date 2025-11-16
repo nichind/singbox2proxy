@@ -16,11 +16,21 @@ import threading
 import weakref
 import shutil
 import sys
+import importlib.util
 from pathlib import Path
 import re
 
 
 _psutil_module = None
+_pysocks_available = None
+
+
+def _has_pysocks_support() -> bool:
+    """Return True if pysocks (socks) is installed/importable."""
+    global _pysocks_available
+    if _pysocks_available is None:
+        _pysocks_available = importlib.util.find_spec("socks") is not None
+    return bool(_pysocks_available)
 
 
 def _get_psutil():
@@ -1608,15 +1618,12 @@ class SingBoxProxy:
             return f"SingBoxProxy(stopped, socks_port={self.socks_port}, http_port={self.http_port})"
 
     @property
-    def proxy_for_requests(self, socks: bool = True):
+    def proxy_for_requests(self):
         """Get a proxies dictionary suitable for the requests library.
 
         Returns a dictionary with 'http' and 'https' keys pointing to the proxy URL,
-        formatted for use with the requests library's proxies parameter.
-
-        Args:
-            socks: If True (default), returns SOCKS5 proxy URLs. If False or SOCKS is
-                  unavailable, returns HTTP proxy URLs.
+        formatted for use with the requests library's proxies parameter. Prefers the
+        HTTP inbound when available and falls back to the SOCKS inbound.
 
         Returns:
             dict: Dictionary with 'http' and 'https' keys mapping to proxy URLs.
@@ -1630,17 +1637,17 @@ class SingBoxProxy:
             >>> response = requests.get("https://api.ipify.org", proxies=proxy.proxy_for_requests)
             >>> print(response.text)  # Your proxied IP address
         """
-        if socks and self.socks_port:
-            return {
-                "http": self.socks5_proxy_url,
-                "https": self.socks5_proxy_url,
-            }
-        elif self.http_port:
-            return {
-                "http": self.http_proxy_url,
-                "https": self.http_proxy_url,
-            }
-        raise RuntimeError("Failed to determine proxy URL for requests")
+        http_url = self.http_proxy_url
+        socks_url = self.socks5_proxy_url
+
+        if http_url:
+            return {"http": http_url, "https": http_url}
+        if socks_url:
+            return {"http": socks_url, "https": socks_url}
+
+        raise RuntimeError(
+            "No HTTP or SOCKS proxy ports are enabled. Provide http_port or socks_port when creating SingBoxProxy."
+        )
 
     @property
     def proxies(self):
@@ -3392,7 +3399,7 @@ class SingBoxProxy:
 
 def _import_request_module():
     try:
-        import curl_cffi
+        import curl_cffi  # type: ignore
 
         return curl_cffi
     except ImportError:
@@ -3439,7 +3446,15 @@ class SingBoxClient:
         >>> client = SingBoxClient(module=requests, timeout=20)
     """
 
-    def __init__(self, client=None, auto_retry: bool = True, retry_times: int = 2, timeout: int = 10, module=None):
+    def __init__(
+        self,
+        client=None,
+        auto_retry: bool = True,
+        retry_times: int = 2,
+        timeout: int = 10,
+        module=None,
+        proxies: dict | None = None,
+    ):
         """Initialize a SingBoxClient instance.
 
         Args:
@@ -3456,6 +3471,8 @@ class SingBoxClient:
             module: HTTP library to use for making requests. Can be curl_cffi.requests
                    or requests. If None, will auto-detect available library, preferring
                    curl-cffi (default: None).
+            proxies: Explicit proxies mapping to use (same format as requests). When
+                     provided, it overrides any proxy provided by the SingBoxProxy instance.
 
         Raises:
             ImportError: If no suitable HTTP request module is available.
@@ -3465,7 +3482,8 @@ class SingBoxClient:
             requests. Install either 'curl-cffi' or 'requests' package to use this client.
         """
         self.client = client
-        self.proxy = client.proxy_for_requests if client else None
+        self._proxy_override = proxies
+        self.proxy = proxies
         self.auto_retry = auto_retry
         self.retry_times = retry_times
         self.timeout = timeout
@@ -3473,6 +3491,12 @@ class SingBoxClient:
         self._session = None
         self._session_lock = threading.RLock()
         self._request_func = None
+
+    def _set_parent(self, proxy: "SingBoxProxy"):
+        """Attach this client to a SingBoxProxy instance without re-instantiation."""
+        self.client = proxy
+        self.proxy = None
+        return self
 
     def _ensure_request_callable(self):
         """Ensure that a request callable function is available from the module.
@@ -3537,6 +3561,52 @@ class SingBoxClient:
                     self._session = session
                     break
             return self._session
+
+    def _get_proxy_mapping(self):
+        """Resolve the proxy configuration for outbound HTTP requests."""
+        if self._proxy_override is not None:
+            self.proxy = self._proxy_override
+            return self._proxy_override
+        if self.client:
+            mapping = self.client.proxy_for_requests
+            self.proxy = mapping
+            return mapping
+        self.proxy = None
+        return None
+
+    @staticmethod
+    def _proxies_require_socks(proxies) -> bool:
+        if not proxies:
+            return False
+        for value in proxies.values():
+            if isinstance(value, str) and value.lower().startswith("socks"):
+                return True
+        return False
+
+    def _request_backend_supports_socks(self) -> bool:
+        if self.module is None:
+            return False
+        module_name = getattr(self.module, "__name__", self.module.__class__.__name__).lower()
+        if module_name.startswith("curl_cffi"):
+            return True
+        if "requests" in module_name:
+            return self._has_pysocks()
+        return True
+
+    @staticmethod
+    def _has_pysocks() -> bool:
+        return _has_pysocks_support()
+
+    def _validate_proxy_support(self, proxies):
+        if not proxies:
+            raise RuntimeError("No proxy mapping provided to SingBoxClient.")
+        if not self._proxies_require_socks(proxies):
+            return
+        if not self._request_backend_supports_socks():
+            raise RuntimeError(
+                "SOCKS proxies require the 'pysocks' package when using requests. "
+                "Install pysocks or enable the HTTP inbound port to avoid leaking traffic."
+            )
 
     def close(self):
         """Close the session and release resources.
@@ -3616,8 +3686,17 @@ class SingBoxClient:
 
         if kwargs.get("timeout") is None:
             kwargs["timeout"] = self.timeout
-        if kwargs.get("proxies") is None:
-            kwargs["proxies"] = self.proxy
+
+        proxies = kwargs.get("proxies")
+        if proxies is None:
+            proxies = self._get_proxy_mapping()
+            if proxies is None:
+                raise RuntimeError(
+                    "No proxy configuration available. Attach a SingBoxProxy instance or pass proxies= explicitly."
+                )
+            kwargs["proxies"] = proxies
+
+        self._validate_proxy_support(kwargs["proxies"])
 
         base_kwargs = dict(kwargs)
         retry_times = base_kwargs.pop("retries", self.retry_times if self.auto_retry else 0)
@@ -3912,8 +3991,9 @@ class SingBoxClient:
             >>> print(repr(client))
             <SingBoxClient proxy=True timeout=20 auto_retry=True retry_times=2 session=True>
         """
+        has_proxy = self.proxy is not None or self._proxy_override is not None or self.client is not None
         return (
-            f"<SingBoxClient proxy={self.proxy is not None} "
+            f"<SingBoxClient proxy={has_proxy} "
             f"timeout={self.timeout} auto_retry={self.auto_retry} "
             f"retry_times={self.retry_times} session={self.is_session_active}>"
         )
