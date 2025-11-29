@@ -1467,6 +1467,7 @@ class SingBoxProxy:
         tun_mtu: int = 9000,
         tun_auto_route: bool = True,
         set_system_proxy: bool = False,
+        route: dict = None,
     ):
         """Initialize a SingBoxProxy instance.
 
@@ -1498,6 +1499,8 @@ class SingBoxProxy:
             tun_auto_route: If True, automatically configure system routing rules. Default is True.
             set_system_proxy: If True, automatically configure system-wide proxy settings to use
                             this proxy. Settings are restored when the proxy is stopped. Default is False.
+            route: Optional dictionary containing sing-box routing rules. This corresponds to the
+                  "route" section in the sing-box configuration.
 
         Raises:
             TypeError: If config is not a string or path-like object.
@@ -1518,7 +1521,7 @@ class SingBoxProxy:
             parsed = urllib.parse.urlparse(config)
             # Treat strings that parse to a URL with a scheme and a network location as URLs.
             # This handles proxy link schemes like vless://, vmess://, ss://, trojan://, etc.
-            # It also avoids misclassifying Windows paths like "C:\path" which have a scheme but no netloc.
+            # It also avoids misclassifying Windows paths like "C:\\path" which have a scheme but no netloc.
             if parsed.scheme and parsed.netloc:
                 self.config_url = config
                 self.config_path = None
@@ -1546,9 +1549,10 @@ class SingBoxProxy:
         self.tun_stack = tun_stack
         self.tun_mtu = tun_mtu
         self.tun_auto_route = tun_auto_route
+        self.set_system_proxy = set_system_proxy
+        self.route = route
 
         # System proxy configuration
-        self.set_system_proxy = set_system_proxy
         self._system_proxy_manager = None
 
         # Runtime state
@@ -1760,7 +1764,7 @@ class SingBoxProxy:
 
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(("localhost", 0))  # Let OS choose a free port
+                    s.bind(("", 0))  # Let OS choose a free port on all interfaces
                     _, port = s.getsockname()
                     if port not in exclude_port:
                         _allocated_ports.add(port)
@@ -2445,6 +2449,10 @@ class SingBoxProxy:
                 "inbounds": [],
                 "outbounds": outbounds,
             }
+
+            # Add route section if provided
+            if self.route:
+                config["route"] = self.route
 
             # Add TUN inbound if enabled
             if self.tun_enabled:
