@@ -11,6 +11,9 @@ class TestSingBoxFetch(unittest.TestCase):
     def test_pick_unused_port(self):
         port = SingBoxProxy._pick_unused_port()
         self.assertIsNotNone(port)
+        self.assertIsInstance(port, int)
+        self.assertTrue(1024 < port < 65535)
+        self.assertFalse(SingBoxProxy._is_port_in_use(port))
 
     def test_proxy_client(self):
         proxy = SingBoxProxy(TEST_LINK)
