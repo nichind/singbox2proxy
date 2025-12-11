@@ -19,8 +19,6 @@ jobs:
             runs-on: ubuntu-22.04
           - os: windows
             runs-on: windows-latest
-          - os: macos-13
-            runs-on: macos-13
           - os: macos
             runs-on: macos-latest
     env:
