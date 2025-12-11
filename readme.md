@@ -121,6 +121,40 @@ proxy = SingBoxProxy("vless://...", tun_enabled=True)
 # Use like a normal VPN connection
 ```
 
+#### Relay - Share Your Proxy Connection
+
+Create a shareable proxy server that relays traffic through your existing proxy connection or provides direct internet access:
+
+```python
+from singbox2proxy import SingBoxProxy
+
+# Relay through an existing proxy
+proxy = SingBoxProxy(
+    "vless://original-proxy-url",
+    relay_protocol="ss",  # Protocol for the relay server
+    relay_host="192.168.1.100",  # Your server's IP (auto-detected if not specified)
+    relay_port=8443  # Port for the relay server (auto-assigned if not specified)
+)
+
+# Or create a direct connection relay (no proxy URL needed)
+direct_relay = SingBoxProxy(
+    None,  # No proxy - direct connection
+    relay_protocol="ss",
+    relay_host="my-server.com",
+    relay_port=8443
+)
+
+# Get the shareable URL
+print(f"Share this URL: {proxy.relay_url}")
+# Output: ss://uuid@192.168.1.100:8443?type=tcp&security=none#singbox2proxy-relay
+
+# Keep the proxy running
+input("Press Enter to stop...")
+proxy.stop()
+```
+
+**Supported protocols:** `vmess`, `trojan`, `ss`, `socks`, `http`
+
 #### System Proxy Configuration
 
 Automatically configure your OS proxy settings. This is a great alternative to TUN mode when you don't have root access.
@@ -172,6 +206,33 @@ sb2p "vmess://..." "vless://..." "hy2://..." --chain
 > See what protocols can be used as middleman proxies at [supported protocols](#supported-protocols)
 
 The first URL becomes the entry point, and the last URL connects to the target server.
+
+#### Relay - Share Your Proxy Connection
+
+Create a shareable proxy server that relays traffic through your existing proxy connection, or provides direct internet access from your server:
+
+```shell
+# Relay through an existing proxy
+sb2p "ss://original-proxy" --relay ss
+
+# Direct connection relay (no proxy, just share your server's internet)
+sb2p --relay ss
+
+# Output includes a shareable URL:
+#   Relay URL: vless://uuid@your-ip:port?type=tcp&security=none#singbox2proxy-relay
+#   Share this URL to relay traffic through your server
+```
+
+Supported relay protocols: `vmess`, `trojan`, `ss`/`shadowsocks`, `socks`, `http`
+
+Custom host and port:
+
+```shell
+sb2p "ss://..." --relay ss --relay-host "myserver.com" --relay-port 8443
+
+# Direct connection with custom settings
+sb2p --relay ss --relay-host "myserver.com" --relay-port 8443
+```
 
 #### Configuration Management
 
