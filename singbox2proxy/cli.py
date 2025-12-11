@@ -27,12 +27,19 @@ Examples:
   singbox2proxy "trojan://..." --socks-port False
   singbox2proxy "hy2://..." --verbose --test
   singbox2proxy "vless://..." --set-system-proxy
+  singbox2proxy "vless://..." --relay vmess
+  singbox2proxy "ss://..." --relay ss --relay-port 8443
+  singbox2proxy --relay vless  # Direct connection relay
   sudo singbox2proxy "vless://..." --tun
   sudo singbox2proxy "vmess://..." --tun --tun-stack gvisor --tun-address 10.0.0.1/24
         """,
     )
 
-    parser.add_argument("urls", nargs="+", help="Proxy URLs (multiple URLs will be chained if --chain is used)")
+    parser.add_argument(
+        "urls",
+        nargs="*",
+        help="Proxy URLs (multiple URLs will be chained if --chain is used). Optional when using --relay for direct connection.",
+    )
 
     parser.add_argument("--chain", action="store_true", help="Chain multiple proxies (first proxy -> second proxy -> ... -> target)")
 
@@ -72,6 +79,16 @@ Examples:
         "--set-system-proxy", action="store_true", help="Set system proxy settings to use this proxy (applied on start, reverted on stop)"
     )
 
+    parser.add_argument(
+        "--relay",
+        choices=["vmess", "trojan", "ss", "shadowsocks", "socks", "http"],
+        help="Create a shareable proxy URL that relays traffic (e.g., --relay vless). Can be used without a proxy URL for direct connection.",
+    )
+
+    parser.add_argument("--relay-host", help="Host/IP to use in the relay URL (default: auto-detect)")
+
+    parser.add_argument("--relay-port", type=int, help="Port to use for the relay server (default: auto-assign)")
+
     args = parser.parse_args()
 
     # Configure logging
@@ -89,6 +106,13 @@ Examples:
     if args.cmd:
         print(f"sing-box core at {default_core.executable} is running command: {args.cmd}")
         print(default_core.run_command_output(args.cmd))
+
+    # Validate arguments
+    if not args.urls and not args.relay:
+        parser.error("Either provide proxy URLs or use --relay for direct connection")
+
+    if args.chain and args.relay:
+        parser.error("Cannot use --chain with --relay")
 
     # Check for root/admin privileges if TUN mode is enabled
     if args.tun:
@@ -149,8 +173,11 @@ Examples:
             if len(args.urls) > 1:
                 print("Warning: Multiple URLs provided but --chain not specified. Using only the first URL.")
 
+            # Use first URL or None for direct connection
+            config_url = args.urls[0] if args.urls else None
+
             main_proxy = SingBoxProxy(
-                args.urls[0],
+                config_url,
                 http_port=args.http_port,
                 socks_port=args.socks_port,
                 config_only=args.config_only,
@@ -160,6 +187,9 @@ Examples:
                 tun_mtu=args.tun_mtu,
                 tun_auto_route=args.tun_auto_route,
                 set_system_proxy=args.set_system_proxy,
+                relay_protocol=args.relay,
+                relay_host=args.relay_host,
+                relay_port=args.relay_port,
             )
             proxies.append(main_proxy)
 
@@ -191,6 +221,13 @@ Examples:
             print(f"  SOCKS Proxy: {main_proxy.socks5_proxy_url}")
         if args.set_system_proxy:
             print("  System Proxy: Configured (will be restored on stop)")
+        if args.relay and main_proxy.relay_url:
+            print(f"\n  Relay URL: {main_proxy.relay_url}")
+            print(f"  Protocol:  {args.relay}")
+            if args.urls:
+                print("  Share this URL to relay traffic through your proxy")
+            else:
+                print("  Share this URL for direct internet access from your server")
 
         # Test the proxy if requested
         if args.test:

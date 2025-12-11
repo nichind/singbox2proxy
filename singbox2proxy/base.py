@@ -1468,6 +1468,9 @@ class SingBoxProxy:
         tun_auto_route: bool = True,
         set_system_proxy: bool = False,
         route: dict = None,
+        relay_protocol: str = None,
+        relay_host: str = None,
+        relay_port: int = None,
     ):
         """Initialize a SingBoxProxy instance.
 
@@ -1501,6 +1504,10 @@ class SingBoxProxy:
                             this proxy. Settings are restored when the proxy is stopped. Default is False.
             route: Optional dictionary containing sing-box routing rules. This corresponds to the
                   "route" section in the sing-box configuration.
+            relay_protocol: If set, enables relay mode using the specified protocol
+                            (e.g., "vmess", "ss", "trojan").
+            relay_host: Hostname or IP address of the relay server.
+            relay_port: Port of the relay server. If None, an unused port is automatically selected
 
         Raises:
             TypeError: If config is not a string or path-like object.
@@ -1516,8 +1523,12 @@ class SingBoxProxy:
         start_time = time.time()
         self._original_config = config
 
+        # Allow None config for direct connection relay
+        if config is None:
+            self.config_url = None
+            self.config_path = None
         # Distinguish between URL and local path
-        if isinstance(config, (str,)):
+        elif isinstance(config, (str,)):
             parsed = urllib.parse.urlparse(config)
             # Treat strings that parse to a URL with a scheme and a network location as URLs.
             # This handles proxy link schemes like vless://, vmess://, ss://, trojan://, etc.
@@ -1554,6 +1565,13 @@ class SingBoxProxy:
 
         # System proxy configuration
         self._system_proxy_manager = None
+
+        # Relay configuration
+        self.relay_protocol = relay_protocol
+        self.relay_host = relay_host
+        self.relay_port = relay_port or (self._pick_unused_port([self.http_port, self.socks_port]) if relay_protocol else None)
+        self.relay_url = None
+        self._relay_credentials = {}  # Store credentials for URL generation
 
         # Runtime state
         self.singbox_process = None
@@ -1649,9 +1667,7 @@ class SingBoxProxy:
         if socks_url:
             return {"http": socks_url, "https": socks_url}
 
-        raise RuntimeError(
-            "No HTTP or SOCKS proxy ports are enabled. Provide http_port or socks_port when creating SingBoxProxy."
-        )
+        raise RuntimeError("No HTTP or SOCKS proxy ports are enabled. Provide http_port or socks_port when creating SingBoxProxy.")
 
     @property
     def proxies(self):
@@ -1687,6 +1703,152 @@ class SingBoxProxy:
             str: All stderr output from the sing-box process.
         """
         return "".join(self._stderr_lines)
+
+    def _get_public_ip(self) -> str:
+        """Get the public IP address of this machine.
+
+        Attempts multiple methods to determine the public IP:
+        1. Query external IP detection services
+        2. Use local network interface IP as fallback
+
+        Returns:
+            str: The public or local IP address, defaults to "0.0.0.0" if all methods fail.
+        """
+        # Try external IP services
+        services = [
+            "https://api.ipify.org",
+            "https://icanhazip.com",
+            "https://ifconfig.me/ip",
+        ]
+
+        for service in services:
+            try:
+                response = urllib.request.urlopen(service, timeout=3)
+                ip = response.read().decode("utf-8").strip()
+                if ip:
+                    logger.debug(f"Detected public IP: {ip}")
+                    return ip
+            except Exception as e:
+                logger.debug(f"Failed to get IP from {service}: {e}")
+                continue
+
+        # Fallback to local IP
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            logger.debug(f"Using local IP: {ip}")
+            return ip
+        except Exception as e:
+            logger.debug(f"Failed to get local IP: {e}")
+
+        return "0.0.0.0"
+
+    def _generate_relay_url(self, protocol: str, host: str, port: int) -> str:
+        """Generate a shareable proxy URL based on the protocol.
+
+        Args:
+            protocol: The proxy protocol (vmess, trojan, ss, socks, http)
+            host: The host/IP address
+            port: The port number
+
+        Returns:
+            str: A shareable proxy URL
+        """
+        if protocol == "vmess":
+            # Use stored UUID
+            user_id = self._relay_credentials.get("uuid", "")
+            vmess_config = {
+                "v": "2",
+                "ps": "singbox2proxy-vmess",
+                "add": host,
+                "port": str(port),
+                "id": user_id,
+                "aid": "0",
+                "net": "tcp",
+                "type": "none",
+                "host": "",
+                "path": "",
+                "tls": "",
+            }
+            vmess_json = json.dumps(vmess_config)
+            vmess_b64 = base64.b64encode(vmess_json.encode()).decode()
+            return f"vmess://{vmess_b64}"
+
+        elif protocol == "trojan":
+            # Use stored password
+            password = self._relay_credentials.get("password", "")
+            name = urllib.parse.quote("singbox2proxy-relay")
+            return f"trojan://{password}@{host}:{port}#{name}"
+
+        elif protocol in ("ss", "shadowsocks"):
+            # Use stored password
+            password = self._relay_credentials.get("password", "")
+            method = "aes-128-gcm"
+            userinfo = base64.b64encode(f"{method}:{password}".encode()).decode()
+            name = urllib.parse.quote("singbox2proxy-relay")
+            return f"ss://{userinfo}@{host}:{port}#{name}"
+
+        elif protocol == "socks":
+            # Generate SOCKS5 URL: socks5://host:port
+            return f"socks5://{host}:{port}"
+
+        elif protocol == "http":
+            # Generate HTTP URL: http://host:port
+            return f"http://{host}:{port}"
+
+        else:
+            raise ValueError(f"Unsupported relay protocol: {protocol}")
+
+    def _generate_relay_inbound(self) -> dict:
+        """Generate an inbound configuration for the relay server.
+
+        Returns:
+            dict: Sing-box inbound configuration for the relay protocol
+        """
+        import uuid
+
+        protocol = self.relay_protocol
+        port = self.relay_port
+
+        if protocol == "vmess":
+            user_id = str(uuid.uuid4())
+            self._relay_credentials["uuid"] = user_id
+            return {
+                "type": "vmess",
+                "tag": "relay-in",
+                "listen": "0.0.0.0",
+                "listen_port": port,
+                "users": [{"uuid": user_id, "alterId": 0}],
+            }
+
+        elif protocol == "trojan":
+            password = str(uuid.uuid4())
+            self._relay_credentials["password"] = password
+            return {"type": "trojan", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": [{"password": password}]}
+
+        elif protocol in ("ss", "shadowsocks"):
+            password = str(uuid.uuid4())[:16]
+            self._relay_credentials["password"] = password
+            return {
+                "type": "shadowsocks",
+                "tag": "relay-in",
+                "listen": "0.0.0.0",
+                "listen_port": port,
+                "method": "aes-128-gcm",
+                "password": password,
+            }
+
+        elif protocol == "socks":
+            return {"type": "socks", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": []}
+
+        elif protocol == "http":
+            return {"type": "http", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": []}
+
+        else:
+            logger.warning(f"Unsupported relay protocol: {protocol}")
+            return None
 
     def _read_stream(self, stream, collector):
         """Read a stream line by line and append to a collector list.
@@ -2388,8 +2550,12 @@ class SingBoxProxy:
             configured ports.
         """
         try:
+            # Handle direct connection relay (no proxy URL provided)
+            if self.config_url is None:
+                # Create direct outbound for relay
+                outbound = {"type": "direct", "tag": "proxy"}
             # Determine the type of link and parse accordingly
-            if self.config_url.startswith("vmess://"):
+            elif self.config_url.startswith("vmess://"):
                 outbound = self._parse_vmess_link(self.config_url)
             elif self.config_url.startswith("vless://"):
                 outbound = self._parse_vless_link(self.config_url)
@@ -2478,6 +2644,16 @@ class SingBoxProxy:
                 config["inbounds"] += [
                     {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": self.http_port, "users": []}
                 ]
+
+            # Add relay inbound if enabled
+            if self.relay_protocol and self.relay_port:
+                relay_inbound = self._generate_relay_inbound()
+                if relay_inbound:
+                    config["inbounds"].append(relay_inbound)
+
+                    # Generate the shareable URL
+                    host = self.relay_host or self._get_public_ip()
+                    self.relay_url = self._generate_relay_url(self.relay_protocol, host, self.relay_port)
 
             return config
         except Exception as e:
@@ -3699,9 +3875,7 @@ class SingBoxClient:
         if proxies is None:
             proxies = self._get_proxy_mapping()
             if proxies is None:
-                raise RuntimeError(
-                    "No proxy configuration available. Attach a SingBoxProxy instance or pass proxies= explicitly."
-                )
+                raise RuntimeError("No proxy configuration available. Attach a SingBoxProxy instance or pass proxies= explicitly.")
             kwargs["proxies"] = proxies
 
         self._validate_proxy_support(kwargs["proxies"])
