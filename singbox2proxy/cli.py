@@ -29,7 +29,7 @@ Examples:
   singbox2proxy "vless://..." --set-system-proxy
   singbox2proxy "vless://..." --relay vmess
   singbox2proxy "ss://..." --relay ss --relay-port 8443
-  singbox2proxy --relay vless  # Direct connection relay
+  singbox2proxy --relay ss  # Direct connection relay
   sudo singbox2proxy "vless://..." --tun
   sudo singbox2proxy "vmess://..." --tun --tun-stack gvisor --tun-address 10.0.0.1/24
         """,
@@ -88,6 +88,12 @@ Examples:
     parser.add_argument("--relay-host", help="Host/IP to use in the relay URL (default: auto-detect)")
 
     parser.add_argument("--relay-port", type=int, help="Port to use for the relay server (default: auto-assign)")
+
+    parser.add_argument(
+        "--relay-name",
+        default="nichind.dev|singbox2proxy-relay",
+        help="Name to use in the relay URL (default: nichind.dev|singbox2proxy-relay)",
+    )
 
     parser.add_argument("--uuid-seed", help="Seed for deterministic UUID/password generation (makes relay URLs persistent across restarts)")
 
@@ -192,6 +198,7 @@ Examples:
                 relay_protocol=args.relay,
                 relay_host=args.relay_host,
                 relay_port=args.relay_port,
+                relay_name=args.relay_name,
                 uuid_seed=args.uuid_seed,
             )
             proxies.append(main_proxy)
@@ -235,11 +242,12 @@ Examples:
         # Test the proxy if requested
         if args.test:
             print("\nTesting proxy connection...")
-            
+
             # Ping test
             print("\n1. Ping Test:")
             try:
                 import time as time_module
+
                 ping_times = []
                 for i in range(3):
                     start = time_module.time()
@@ -247,10 +255,10 @@ Examples:
                     elapsed = (time_module.time() - start) * 1000  # Convert to ms
                     if response.status_code in (200, 204):
                         ping_times.append(elapsed)
-                        print(f"  Attempt {i+1}: {elapsed:.2f} ms")
+                        print(f"  Attempt {i + 1}: {elapsed:.2f} ms")
                     else:
-                        print(f"  Attempt {i+1}: Failed (status {response.status_code})")
-                
+                        print(f"  Attempt {i + 1}: Failed (status {response.status_code})")
+
                 if ping_times:
                     avg_ping = sum(ping_times) / len(ping_times)
                     min_ping = min(ping_times)
@@ -258,7 +266,7 @@ Examples:
                     print(f"  Average: {avg_ping:.2f} ms (min: {min_ping:.2f} ms, max: {max_ping:.2f} ms)")
             except Exception as e:
                 print(f"  Ping test failed: {str(e)}")
-            
+
             # IP test
             print("\n2. IP Detection Test:")
             try:
