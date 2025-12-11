@@ -50,6 +50,12 @@ cd singbox2proxy
 pip install -e .
 ```
 
+or install directly from GitHub
+
+```shell
+pip install git+https://github.com/nichind/singbox2proxy.git
+```
+
 ### Python Usage
 
 Using built-in client powered by [curl-cffi](https://pypi.org/project/curl-cffi/) or [requests](https://pypi.org/project/requests/)
