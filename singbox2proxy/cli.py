@@ -82,12 +82,14 @@ Examples:
     parser.add_argument(
         "--relay",
         choices=["vmess", "trojan", "ss", "shadowsocks", "socks", "http"],
-        help="Create a shareable proxy URL that relays traffic (e.g., --relay vless). Can be used without a proxy URL for direct connection.",
+        help="Create a shareable proxy URL that relays traffic (e.g., --relay vmess). Can be used without a proxy URL for direct connection.",
     )
 
     parser.add_argument("--relay-host", help="Host/IP to use in the relay URL (default: auto-detect)")
 
     parser.add_argument("--relay-port", type=int, help="Port to use for the relay server (default: auto-assign)")
+
+    parser.add_argument("--uuid-seed", help="Seed for deterministic UUID/password generation (makes relay URLs persistent across restarts)")
 
     args = parser.parse_args()
 
@@ -190,6 +192,7 @@ Examples:
                 relay_protocol=args.relay,
                 relay_host=args.relay_host,
                 relay_port=args.relay_port,
+                uuid_seed=args.uuid_seed,
             )
             proxies.append(main_proxy)
 
@@ -232,15 +235,42 @@ Examples:
         # Test the proxy if requested
         if args.test:
             print("\nTesting proxy connection...")
+            
+            # Ping test
+            print("\n1. Ping Test:")
+            try:
+                import time as time_module
+                ping_times = []
+                for i in range(3):
+                    start = time_module.time()
+                    response = main_proxy.request("GET", "https://www.google.com/generate_204", timeout=5)
+                    elapsed = (time_module.time() - start) * 1000  # Convert to ms
+                    if response.status_code in (200, 204):
+                        ping_times.append(elapsed)
+                        print(f"  Attempt {i+1}: {elapsed:.2f} ms")
+                    else:
+                        print(f"  Attempt {i+1}: Failed (status {response.status_code})")
+                
+                if ping_times:
+                    avg_ping = sum(ping_times) / len(ping_times)
+                    min_ping = min(ping_times)
+                    max_ping = max(ping_times)
+                    print(f"  Average: {avg_ping:.2f} ms (min: {min_ping:.2f} ms, max: {max_ping:.2f} ms)")
+            except Exception as e:
+                print(f"  Ping test failed: {str(e)}")
+            
+            # IP test
+            print("\n2. IP Detection Test:")
             try:
                 response = main_proxy.request("GET", "https://api.ipify.org?format=json")
                 if response.status_code == 200:
                     ip_data = response.json()
-                    print(f"Proxy test successful! External IP: {ip_data['ip']}")
+                    print(f"  External IP: {ip_data['ip']}")
+                    print("\n✓ All tests passed!")
                 else:
-                    print(f"Proxy test failed with status code: {response.status_code}")
+                    print(f"  Failed with status code: {response.status_code}")
             except Exception as e:
-                print(f"Proxy test failed: {str(e)}")
+                print(f"  IP test failed: {str(e)}")
             sys.exit(0)
 
         print("\nProxy is running. Press Ctrl+C to stop.")

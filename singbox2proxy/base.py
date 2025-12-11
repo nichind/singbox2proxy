@@ -1471,6 +1471,7 @@ class SingBoxProxy:
         relay_protocol: str = None,
         relay_host: str = None,
         relay_port: int = None,
+        uuid_seed: str = None,
     ):
         """Initialize a SingBoxProxy instance.
 
@@ -1508,6 +1509,7 @@ class SingBoxProxy:
                             (e.g., "vmess", "ss", "trojan").
             relay_host: Hostname or IP address of the relay server.
             relay_port: Port of the relay server. If None, an unused port is automatically selected
+            uuid_seed: Optional seed string for generating consistent UUIDs in relay mode.
 
         Raises:
             TypeError: If config is not a string or path-like object.
@@ -1571,6 +1573,7 @@ class SingBoxProxy:
         self.relay_host = relay_host
         self.relay_port = relay_port or (self._pick_unused_port([self.http_port, self.socks_port]) if relay_protocol else None)
         self.relay_url = None
+        self.uuid_seed = uuid_seed
         self._relay_credentials = {}  # Store credentials for URL generation
 
         # Runtime state
@@ -1704,6 +1707,40 @@ class SingBoxProxy:
         """
         return "".join(self._stderr_lines)
 
+    def _generate_deterministic_uuid(self, seed: str, suffix: str = "") -> str:
+        """Generate a deterministic UUID from a seed string.
+        
+        Args:
+            seed: The seed string to generate UUID from
+            suffix: Optional suffix to append to seed for different UUIDs
+            
+        Returns:
+            str: A valid UUID v5 string
+        """
+        import uuid
+        
+        # Use UUID5 with a namespace for deterministic generation
+        namespace = uuid.NAMESPACE_DNS
+        combined_seed = f"{seed}{suffix}"
+        return str(uuid.uuid5(namespace, combined_seed))
+    
+    def _generate_deterministic_password(self, seed: str, length: int = 16) -> str:
+        """Generate a deterministic password from a seed string.
+        
+        Args:
+            seed: The seed string to generate password from
+            length: Length of the password (for shadowsocks compatibility)
+            
+        Returns:
+            str: A deterministic password
+        """
+        import hashlib
+        
+        # Generate deterministic password from seed
+        hash_obj = hashlib.sha256(seed.encode())
+        # Take hex digest and truncate to desired length
+        return hash_obj.hexdigest()[:length]
+    
     def _get_public_ip(self) -> str:
         """Get the public IP address of this machine.
 
@@ -1813,7 +1850,10 @@ class SingBoxProxy:
         port = self.relay_port
 
         if protocol == "vmess":
-            user_id = str(uuid.uuid4())
+            if self.uuid_seed:
+                user_id = self._generate_deterministic_uuid(self.uuid_seed, "vmess")
+            else:
+                user_id = str(uuid.uuid4())
             self._relay_credentials["uuid"] = user_id
             return {
                 "type": "vmess",
@@ -1824,12 +1864,18 @@ class SingBoxProxy:
             }
 
         elif protocol == "trojan":
-            password = str(uuid.uuid4())
+            if self.uuid_seed:
+                password = self._generate_deterministic_password(self.uuid_seed + "trojan", 36)
+            else:
+                password = str(uuid.uuid4())
             self._relay_credentials["password"] = password
             return {"type": "trojan", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": [{"password": password}]}
 
         elif protocol in ("ss", "shadowsocks"):
-            password = str(uuid.uuid4())[:16]
+            if self.uuid_seed:
+                password = self._generate_deterministic_password(self.uuid_seed + "shadowsocks", 16)
+            else:
+                password = str(uuid.uuid4())[:16]
             self._relay_credentials["password"] = password
             return {
                 "type": "shadowsocks",
