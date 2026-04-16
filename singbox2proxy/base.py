@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import tempfile
 import os
@@ -7,7 +9,6 @@ import random
 import atexit
 import logging
 import base64
-import binascii
 import urllib.parse
 import urllib.request
 import socket
@@ -16,21 +17,14 @@ import threading
 import weakref
 import shutil
 import sys
-import importlib.util
 from pathlib import Path
 import re
 
+from .parsers import parse_link, _safe_base64_decode  # noqa: F401 - _safe_base64_decode kept for backward compat
+from .client import SingBoxClient, default_request_module  # noqa: F401
+
 
 _psutil_module = None
-_pysocks_available = None
-
-
-def _has_pysocks_support() -> bool:
-    """Return True if pysocks (socks) is installed/importable."""
-    global _pysocks_available
-    if _pysocks_available is None:
-        _pysocks_available = importlib.util.find_spec("socks") is not None
-    return bool(_pysocks_available)
 
 
 def _get_psutil():
@@ -163,29 +157,25 @@ class SystemProxyManager:
             return False
 
         try:
-            # Open registry key
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_WRITE
-            )
+            ) as key:
+                # Enable proxy
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
 
-            # Enable proxy
-            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                # Set proxy server
+                if http_proxy:
+                    # Extract host:port from URL
+                    proxy_url = urllib.parse.urlparse(http_proxy)
+                    proxy_addr = f"{proxy_url.hostname}:{proxy_url.port}"
+                    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_addr)
 
-            # Set proxy server
-            if http_proxy:
-                # Extract host:port from URL
-                proxy_url = urllib.parse.urlparse(http_proxy)
-                proxy_addr = f"{proxy_url.hostname}:{proxy_url.port}"
-                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_addr)
-
-            # Set bypass list
-            if bypass_list:
-                bypass_str = ";".join(bypass_list)
-            else:
-                bypass_str = "localhost;127.*;10.*;172.16.*;172.31.*;192.168.*"
-            winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, bypass_str)
-
-            winreg.CloseKey(key)
+                # Set bypass list
+                if bypass_list:
+                    bypass_str = ";".join(bypass_list)
+                else:
+                    bypass_str = "localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*"
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, bypass_str)
 
             # Notify system of settings change
             self._notify_windows_settings_change()
@@ -206,22 +196,20 @@ class SystemProxyManager:
             return False
 
         try:
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_WRITE
-            )
+            ) as key:
+                # Restore settings
+                if self.original_settings:
+                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, self.original_settings.get("ProxyEnable", 0))
+                    if "ProxyServer" in self.original_settings:
+                        winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, self.original_settings["ProxyServer"])
+                    if "ProxyOverride" in self.original_settings:
+                        winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, self.original_settings["ProxyOverride"])
+                else:
+                    # Disable proxy
+                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
 
-            # Restore settings
-            if self.original_settings:
-                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, self.original_settings.get("ProxyEnable", 0))
-                if "ProxyServer" in self.original_settings:
-                    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, self.original_settings["ProxyServer"])
-                if "ProxyOverride" in self.original_settings:
-                    winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, self.original_settings["ProxyOverride"])
-            else:
-                # Disable proxy
-                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-
-            winreg.CloseKey(key)
             self._notify_windows_settings_change()
 
             logger.info("Windows system proxy restored")
@@ -236,28 +224,26 @@ class SystemProxyManager:
         try:
             import winreg
 
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings", 0, winreg.KEY_READ
-            )
+            ) as key:
+                settings = {}
+                try:
+                    settings["ProxyEnable"] = winreg.QueryValueEx(key, "ProxyEnable")[0]
+                except FileNotFoundError:
+                    settings["ProxyEnable"] = 0
 
-            settings = {}
-            try:
-                settings["ProxyEnable"] = winreg.QueryValueEx(key, "ProxyEnable")[0]
-            except FileNotFoundError:
-                settings["ProxyEnable"] = 0
+                try:
+                    settings["ProxyServer"] = winreg.QueryValueEx(key, "ProxyServer")[0]
+                except FileNotFoundError:
+                    pass
 
-            try:
-                settings["ProxyServer"] = winreg.QueryValueEx(key, "ProxyServer")[0]
-            except FileNotFoundError:
-                pass
+                try:
+                    settings["ProxyOverride"] = winreg.QueryValueEx(key, "ProxyOverride")[0]
+                except FileNotFoundError:
+                    pass
 
-            try:
-                settings["ProxyOverride"] = winreg.QueryValueEx(key, "ProxyOverride")[0]
-            except FileNotFoundError:
-                pass
-
-            winreg.CloseKey(key)
-            return settings
+                return settings
 
         except Exception as e:
             logger.debug(f"Could not get Windows settings: {e}")
@@ -329,11 +315,11 @@ class SystemProxyManager:
 
             # Set bypass domains
             if bypass_list:
-                bypass_str = " ".join([f'"{domain}"' for domain in bypass_list])
+                cmd_bypass = ["networksetup", "-setproxybypassdomains", service] + list(bypass_list)
             else:
-                bypass_str = '"localhost" "127.0.0.1" "*.local"'
+                cmd_bypass = ["networksetup", "-setproxybypassdomains", service, "localhost", "127.0.0.1", "*.local"]
 
-            subprocess.run(f'networksetup -setproxybypassdomains "{service}" {bypass_str}', shell=True, capture_output=True, text=True)
+            subprocess.run(cmd_bypass, capture_output=True, text=True)
 
             if success:
                 self._enabled = True
@@ -875,7 +861,6 @@ class SingBoxCore:
 
                 logger.info(f"Running package manager command: {' '.join(final_cmd)}")
                 try:
-                    proc = subprocess.run(final_cmd, check=False, capture_output=True, text=True, timeout=600)
                     proc_p = subprocess.Popen(
                         final_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, universal_newlines=True, bufsize=1
                     )
@@ -886,8 +871,7 @@ class SingBoxCore:
                     def _reader(stream, collector, is_stderr=False):
                         try:
                             for line in iter(stream.readline, ""):
-                                # Print in real-time to stdout/stderr and collect
-                                print(line, end="", flush=True)
+                                logger.info(line.rstrip())
                                 collector.append(line)
                         except Exception:
                             pass
@@ -1391,22 +1375,15 @@ class SingBoxCore:
         return "SingBoxCore(unavailable)"
 
 
-default_core = SingBoxCore()
+default_core = None
 
 
-def _safe_base64_decode(data: str) -> str:
-    """Safely decode base64 data"""
-    try:
-        # Add padding if needed
-        missing_padding = len(data) % 4
-        if missing_padding:
-            data += "=" * (4 - missing_padding)
-
-        # Try to decode
-        decoded_bytes = base64.b64decode(data)
-        return decoded_bytes.decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError, ValueError) as e:
-        raise ValueError(f"Invalid base64 data: {str(e)}")
+def _get_default_core():
+    """Lazy-initialize and return the default SingBoxCore instance."""
+    global default_core
+    if default_core is None:
+        default_core = SingBoxCore()
+    return default_core
 
 
 class SingBoxProxy:
@@ -1593,7 +1570,7 @@ class SingBoxProxy:
         _active_processes.add(self)
 
         # set SingBoxCore
-        self.core = core or default_core
+        self.core = core or _get_default_core()
 
         if client is not False:
             self.client = client._set_parent(self) if isinstance(client, SingBoxClient) else SingBoxClient(self)
@@ -1744,17 +1721,21 @@ class SingBoxProxy:
         # Take hex digest and truncate to desired length
         return hash_obj.hexdigest()[:length]
 
+    _cached_public_ip = None
+
     def _get_public_ip(self) -> str:
         """Get the public IP address of this machine.
 
-        Attempts multiple methods to determine the public IP:
-        1. Query external IP detection services
-        2. Use local network interface IP as fallback
+        Attempts to query an external IP detection service, falling back to
+        local network interface IP. Result is cached across instances.
 
         Returns:
             str: The public or local IP address, defaults to "0.0.0.0" if all methods fail.
         """
-        # Try external IP services
+        if SingBoxProxy._cached_public_ip:
+            return SingBoxProxy._cached_public_ip
+
+        # Try external IP services (one at a time, fast timeout)
         services = [
             "https://api.ipify.org",
             "https://icanhazip.com",
@@ -1767,6 +1748,7 @@ class SingBoxProxy:
                 ip = response.read().decode("utf-8").strip()
                 if ip:
                     logger.debug(f"Detected public IP: {ip}")
+                    SingBoxProxy._cached_public_ip = ip
                     return ip
             except Exception as e:
                 logger.debug(f"Failed to get IP from {service}: {e}")
@@ -1779,6 +1761,7 @@ class SingBoxProxy:
             ip = s.getsockname()[0]
             s.close()
             logger.debug(f"Using local IP: {ip}")
+            SingBoxProxy._cached_public_ip = ip
             return ip
         except Exception as e:
             logger.debug(f"Failed to get local IP: {e}")
@@ -1820,7 +1803,7 @@ class SingBoxProxy:
             # Use stored password
             password = self._relay_credentials.get("password", "")
             name = urllib.parse.quote(self.relay_name)
-            return f"trojan://{password}@{host}:{port}#{name}"
+            return f"trojan://{urllib.parse.quote(password, safe='')}@{host}:{port}?security=tls&allowInsecure=1#{name}"
 
         elif protocol in ("ss", "shadowsocks"):
             # Use stored password
@@ -1830,16 +1813,167 @@ class SingBoxProxy:
             name = urllib.parse.quote(self.relay_name)
             return f"ss://{userinfo}@{host}:{port}#{name}"
 
+        elif protocol == "vless":
+            user_id = self._relay_credentials.get("uuid", "")
+            name = urllib.parse.quote(self.relay_name)
+            return f"vless://{user_id}@{host}:{port}?security=none&type=tcp#{name}"
+
         elif protocol == "socks":
-            # Generate SOCKS5 URL: socks5://host:port
+            username = self._relay_credentials.get("username", "")
+            password = self._relay_credentials.get("password", "")
+            if username and password:
+                return f"socks5://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{host}:{port}"
             return f"socks5://{host}:{port}"
 
         elif protocol == "http":
-            # Generate HTTP URL: http://host:port
+            username = self._relay_credentials.get("username", "")
+            password = self._relay_credentials.get("password", "")
+            if username and password:
+                return f"http://{urllib.parse.quote(username)}:{urllib.parse.quote(password)}@{host}:{port}"
             return f"http://{host}:{port}"
 
         else:
             raise ValueError(f"Unsupported relay protocol: {protocol}")
+
+    def _generate_self_signed_cert(self):
+        """Generate a self-signed TLS certificate and key as temp files.
+
+        Returns:
+            tuple[str, str]: Paths to (cert_file, key_file).
+        """
+        cert_pem = None
+        key_pem = None
+
+        # Method 1: sing-box built-in cert generation
+        try:
+            result = self.core.run_command(["generate", "tls-keypair", "localhost"], timeout=10)
+            if result.returncode == 0 and result.stdout:
+                parts = result.stdout.strip().split("\n\n")
+                if len(parts) >= 2:
+                    cert_pem = parts[0].strip()
+                    key_pem = parts[1].strip()
+        except Exception as e:
+            logger.debug(f"sing-box tls-keypair failed: {e}")
+
+        # Method 2: openssl CLI
+        if not cert_pem or not key_pem:
+            try:
+                cert_pem, key_pem = self._generate_cert_openssl()
+            except Exception as e:
+                logger.debug(f"openssl cert generation failed: {e}")
+
+        # Method 3: Python cryptography
+        if not cert_pem or not key_pem:
+            try:
+                cert_pem, key_pem = self._generate_cert_python()
+            except Exception as e:
+                logger.debug(f"Python cert generation failed: {e}")
+
+        if not cert_pem or not key_pem:
+            raise RuntimeError(
+                "Cannot generate TLS certificate for Trojan relay. "
+                "Install openssl or 'pip install cryptography', or use a different relay protocol."
+            )
+
+        cert_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False, mode="w")
+        cert_file.write(cert_pem + "\n")
+        cert_file.close()
+
+        key_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False, mode="w")
+        key_file.write(key_pem + "\n")
+        key_file.close()
+
+        try:
+            os.chmod(cert_file.name, 0o600)
+            os.chmod(key_file.name, 0o600)
+        except OSError:
+            pass
+
+        # Track for cleanup
+        if not hasattr(self, "_tls_temp_files"):
+            self._tls_temp_files = []
+        self._tls_temp_files.extend([cert_file.name, key_file.name])
+
+        return cert_file.name, key_file.name
+
+    @staticmethod
+    def _generate_cert_openssl():
+        """Generate a self-signed cert+key using openssl CLI as a fallback."""
+        key_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False, mode="w")
+        key_file.close()
+        cert_file = tempfile.NamedTemporaryFile(suffix=".pem", delete=False, mode="w")
+        cert_file.close()
+        try:
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "ec",
+                    "-pkeyopt",
+                    "ec_paramgen_curve:prime256v1",
+                    "-keyout",
+                    key_file.name,
+                    "-out",
+                    cert_file.name,
+                    "-days",
+                    "3650",
+                    "-nodes",
+                    "-subj",
+                    "/CN=localhost",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            with open(cert_file.name) as f:
+                cert_pem = f.read().strip()
+            with open(key_file.name) as f:
+                key_pem = f.read().strip()
+            return cert_pem, key_pem
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot generate TLS certificate: openssl not found. "
+                f"Trojan relay requires TLS. Install openssl or use a different relay protocol. ({e})"
+            )
+        finally:
+            for path in (cert_file.name, key_file.name):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _generate_cert_python():
+        """Generate a self-signed cert+key using the 'cryptography' Python package."""
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        import datetime
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=3650))
+            .sign(key, hashes.SHA256())
+        )
+        cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+        key_pem = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ).decode()
+        return cert_pem.strip(), key_pem.strip()
 
     def _generate_relay_inbound(self) -> dict:
         """Generate an inbound configuration for the relay server.
@@ -1851,6 +1985,7 @@ class SingBoxProxy:
 
         protocol = self.relay_protocol
         port = self.relay_port
+        listen_addr = self.relay_host if self.relay_host and self.relay_host != "0.0.0.0" else "127.0.0.1"
 
         if protocol == "vmess":
             if self.uuid_seed:
@@ -1861,7 +1996,7 @@ class SingBoxProxy:
             return {
                 "type": "vmess",
                 "tag": "relay-in",
-                "listen": "0.0.0.0",
+                "listen": listen_addr,
                 "listen_port": port,
                 "users": [{"uuid": user_id, "alterId": 0}],
             }
@@ -1872,7 +2007,19 @@ class SingBoxProxy:
             else:
                 password = str(uuid.uuid4())
             self._relay_credentials["password"] = password
-            return {"type": "trojan", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": [{"password": password}]}
+            cert_path, key_path = self._generate_self_signed_cert()
+            return {
+                "type": "trojan",
+                "tag": "relay-in",
+                "listen": listen_addr,
+                "listen_port": port,
+                "users": [{"password": password}],
+                "tls": {
+                    "enabled": True,
+                    "certificate_path": cert_path,
+                    "key_path": key_path,
+                },
+            }
 
         elif protocol in ("ss", "shadowsocks"):
             if self.uuid_seed:
@@ -1883,17 +2030,59 @@ class SingBoxProxy:
             return {
                 "type": "shadowsocks",
                 "tag": "relay-in",
-                "listen": "0.0.0.0",
+                "listen": listen_addr,
                 "listen_port": port,
                 "method": "aes-128-gcm",
                 "password": password,
             }
 
+        elif protocol == "vless":
+            if self.uuid_seed:
+                user_id = self._generate_deterministic_uuid(self.uuid_seed, "vless")
+            else:
+                user_id = str(uuid.uuid4())
+            self._relay_credentials["uuid"] = user_id
+            return {
+                "type": "vless",
+                "tag": "relay-in",
+                "listen": listen_addr,
+                "listen_port": port,
+                "users": [{"uuid": user_id}],
+            }
+
         elif protocol == "socks":
-            return {"type": "socks", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": []}
+            if self.uuid_seed:
+                username = "relay"
+                password = self._generate_deterministic_password(self.uuid_seed + "socks", 16)
+            else:
+                username = "relay"
+                password = str(uuid.uuid4())[:16]
+            self._relay_credentials["username"] = username
+            self._relay_credentials["password"] = password
+            return {
+                "type": "socks",
+                "tag": "relay-in",
+                "listen": listen_addr,
+                "listen_port": port,
+                "users": [{"username": username, "password": password}],
+            }
 
         elif protocol == "http":
-            return {"type": "http", "tag": "relay-in", "listen": "0.0.0.0", "listen_port": port, "users": []}
+            if self.uuid_seed:
+                username = "relay"
+                password = self._generate_deterministic_password(self.uuid_seed + "http", 16)
+            else:
+                username = "relay"
+                password = str(uuid.uuid4())[:16]
+            self._relay_credentials["username"] = username
+            self._relay_credentials["password"] = password
+            return {
+                "type": "http",
+                "tag": "relay-in",
+                "listen": listen_addr,
+                "listen_port": port,
+                "users": [{"username": username, "password": password}],
+            }
 
         else:
             logger.warning(f"Unsupported relay protocol: {protocol}")
@@ -1993,584 +2182,54 @@ class SingBoxProxy:
 
             raise RuntimeError("Could not find an unused port")
 
-    def _parse_vmess_link(self, link: str) -> dict:
-        """Parse a VMess link into a sing-box configuration."""
-        if not link.startswith("vmess://"):
-            raise ValueError("Not a valid VMess link")
-
-        try:
-            # URL-decode first, as base64 can contain '+' which might be a space
-            link = urllib.parse.unquote(link)
-            b64_content = link[8:]
-            decoded_content = _safe_base64_decode(b64_content)
-            vmess_info = json.loads(decoded_content)
-
-            # Extract and clean up values
-            server = str(vmess_info.get("add", "")).strip()
-            port_str = str(vmess_info.get("port", "443")).strip()
-            port = int(port_str) if port_str.isdigit() else 443
-            uuid = str(vmess_info.get("id", "")).strip()
-            security = str(vmess_info.get("scy", "auto")).strip()
-            alter_id_str = str(vmess_info.get("aid", "0")).strip()
-            alter_id = int(alter_id_str) if alter_id_str.isdigit() else 0
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "vmess",
-                "tag": "proxy",
-                "server": server,
-                "server_port": port,
-                "uuid": uuid,
-                "security": security,
-                "alter_id": alter_id,
-            }
-
-            # Handle transport (network) settings
-            network = str(vmess_info.get("net", "tcp")).strip()
-            host_header = str(vmess_info.get("host", "")).strip()
-            path = str(vmess_info.get("path", "/")).strip()
-
-            if network == "ws":
-                outbound["transport"] = {"type": "ws", "path": path, "headers": {"Host": host_header} if host_header else {}}
-            elif network == "grpc":
-                # gRPC service name is in 'path' for some clients
-                service_name = str(vmess_info.get("path", "")).strip()
-                outbound["transport"] = {"type": "grpc", "service_name": service_name}
-
-            # Handle TLS settings
-            if str(vmess_info.get("tls")).strip() == "tls":
-                sni = str(vmess_info.get("sni", "")).strip()
-                outbound["tls"] = {"enabled": True, "server_name": sni or host_header or server}
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse VMess link: {str(e)}")
-            raise ValueError(f"Invalid VMess format: {str(e)}")
-
-    def _parse_vless_link(self, link: str) -> dict:
-        """Parse a VLESS link into a sing-box configuration."""
-        if not link.startswith("vless://"):
-            raise ValueError("Not a valid VLESS link")
-
-        try:
-            # Format: vless://uuid@host:port?param=value&param2=value2#remark
-            # First decode any URL encoding - handle both & and &amp; separators
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract user info (uuid)
-            if "@" not in parsed_url.netloc:
-                raise ValueError("Invalid VLESS format: missing @ separator")
-
-            user_info = parsed_url.netloc.split("@")[0]
-
-            # Extract host and port
-            host_port = parsed_url.netloc.split("@")[1]
-            if ":" in host_port:
-                host, port = host_port.rsplit(":", 1)
-                try:
-                    port = int(port)
-                except ValueError:
-                    # If port is not a number, treat the whole thing as host
-                    host = host_port
-                    port = 443  # Default port
-            else:
-                host = host_port
-                port = 443  # Default port
-
-            # Parse query parameters - handle both & and &amp; separators
-            query_string = parsed_url.query.replace("&amp;", "&")
-            params = dict(urllib.parse.parse_qsl(query_string))
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "vless",
-                "tag": "proxy",
-                "server": host.strip(),
-                "server_port": port,
-                "uuid": user_info.strip(),
-                "flow": params.get("flow", ""),
-            }
-
-            # Handle transport settings
-            transport_type = params.get("type", "tcp")
-            if transport_type == "ws":
-                outbound["transport"] = {"type": "ws", "path": params.get("path", "/"), "headers": {}}
-                # Handle host header
-                if params.get("host"):
-                    outbound["transport"]["headers"]["Host"] = params.get("host")
-            elif transport_type == "grpc":
-                outbound["transport"] = {"type": "grpc", "service_name": params.get("serviceName", params.get("path", ""))}
-
-            # Handle TLS settings
-            security = params.get("security", "none")
-            if security == "tls":
-                outbound["tls"] = {"enabled": True, "server_name": params.get("sni", params.get("host", host))}
-            elif security == "reality":
-                outbound["tls"] = {
-                    "enabled": True,
-                    "server_name": params.get("sni", params.get("host", host)),
-                    "reality": {"enabled": True, "public_key": params.get("pbk", ""), "short_id": params.get("sid", "")},
-                    "utls": {"enabled": True, "fingerprint": "chrome"},
-                }
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse VLESS link: {str(e)}")
-            raise ValueError(f"Invalid VLESS format: {str(e)}")
-
-    def _parse_shadowsocks_link(self, link: str) -> dict:
-        """Parse a Shadowsocks link into a sing-box configuration."""
-        if not link.startswith("ss://"):
-            raise ValueError("Not a valid Shadowsocks link")
-
-        try:
-            # URL decode the link first to handle encoded characters
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Check if this is actually a VLESS/VMess link disguised as SS
-            query_params = dict(urllib.parse.parse_qsl(parsed_url.query.replace("&amp;", "&")))
-            if any(param in query_params for param in ["type", "security", "encryption", "host", "path"]):
-                # This looks like a VLESS/VMess link with ss:// prefix, treat as VLESS
-                # Convert ss:// to vless:// and parse as VLESS
-                vless_link = link.replace("ss://", "vless://", 1)
-                return self._parse_vless_link(vless_link)
-
-            # Handle standard Shadowsocks formats
-            if "@" in parsed_url.netloc:
-                # Format: ss://base64(method:password)@host:port or ss://userinfo@host:port
-                user_info_part, host_port = parsed_url.netloc.split("@", 1)
-
-                # Try to decode as base64 first
-                try:
-                    user_info = _safe_base64_decode(user_info_part)
-                    if ":" in user_info:
-                        method, password = user_info.split(":", 1)
-                    else:
-                        # Sometimes the format is just the password
-                        method = "aes-256-cfb"  # Default method
-                        password = user_info
-                except (ValueError, UnicodeDecodeError):
-                    # Not base64, treat as plain text (UUID format)
-                    if ":" in user_info_part:
-                        method, password = user_info_part.split(":", 1)
-                    else:
-                        # Assume it's a UUID/password
-                        method = "aes-256-gcm"  # Modern default
-                        password = user_info_part
-
-                # Parse host and port
-                if ":" in host_port:
-                    host, port = host_port.rsplit(":", 1)
-                else:
-                    host = host_port
-                    port = "443"  # Default port
-            else:
-                # Format: ss://base64(method:password@host:port)
-                try:
-                    decoded = _safe_base64_decode(parsed_url.netloc)
-                    if "@" in decoded:
-                        method_pass, host_port = decoded.split("@", 1)
-                        method, password = method_pass.split(":", 1)
-                        if ":" in host_port:
-                            host, port = host_port.rsplit(":", 1)
-                        else:
-                            host = host_port
-                            port = "443"
-                    else:
-                        raise ValueError("Invalid format")
-                except Exception:
-                    raise ValueError("Unable to decode Shadowsocks link")
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "shadowsocks",
-                "tag": "proxy",
-                "server": host.strip(),
-                "server_port": int(port),
-                "method": method.strip(),
-                "password": password.strip(),
-            }
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse Shadowsocks link: {str(e)}")
-            raise ValueError(f"Invalid Shadowsocks format: {str(e)}")
-
-    def _parse_trojan_link(self, link: str) -> dict:
-        """Parse a Trojan link into a sing-box configuration."""
-        if not link.startswith("trojan://"):
-            raise ValueError("Not a valid Trojan link")
-
-        try:
-            # Format: trojan://password@host:port?param=value&param2=value2#remark
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract password
-            password = parsed_url.username or ""
-
-            # Extract host and port
-            host = parsed_url.hostname
-            port = parsed_url.port or 443
-
-            # Parse query parameters
-            params = dict(urllib.parse.parse_qsl(parsed_url.query))
-
-            # Create outbound configuration for sing-box
-            outbound = {"type": "trojan", "tag": "proxy", "server": host, "server_port": port, "password": password}
-
-            # Handle transport settings
-            transport_type = params.get("type", "tcp")
-            host_header = params.get("host", "")
-            if transport_type == "ws":
-                outbound["transport"] = {
-                    "type": "ws",
-                    "path": params.get("path", "/"),
-                    "headers": {"Host": host_header} if host_header else {},
-                }
-            elif transport_type == "grpc":
-                outbound["transport"] = {"type": "grpc", "service_name": params.get("serviceName", params.get("path", ""))}
-
-            # Handle TLS settings - Trojan always uses TLS
-            sni = params.get("sni", host_header or host)
-            outbound["tls"] = {"enabled": True, "server_name": sni}
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse Trojan link: {str(e)}")
-            raise ValueError(f"Invalid Trojan format: {str(e)}")
-
-    def _parse_hysteria2_link(self, link: str) -> dict:
-        """Parse a Hysteria2 link into a sing-box configuration."""
-        if not link.startswith("hy2://") and not link.startswith("hysteria2://"):
-            raise ValueError("Not a valid Hysteria2 link")
-
-        try:
-            # Format: hy2://password@host:port?param=value#remark
-            # or hysteria2://password@host:port?param=value#remark
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract password
-            password = parsed_url.username or ""
-
-            # Extract host and port
-            host = parsed_url.hostname
-            port = parsed_url.port or 443
-
-            # Parse query parameters
-            params = dict(urllib.parse.parse_qsl(parsed_url.query))
-
-            # Create outbound configuration for sing-box
-            outbound = {"type": "hysteria2", "tag": "proxy", "server": host, "server_port": port, "password": password}
-
-            # Handle TLS settings
-            sni = params.get("sni", host)
-            insecure = params.get("insecure", "0") == "1"
-            outbound["tls"] = {"enabled": True, "server_name": sni, "insecure": insecure}
-
-            # Handle optional parameters
-            obfs_pass = params.get("obfs", "")
-            if obfs_pass:
-                outbound["obfs"] = {"type": "salamander", "password": obfs_pass}
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse Hysteria2 link: {str(e)}")
-            raise ValueError(f"Invalid Hysteria2 format: {str(e)}")
-
-    def _parse_tuic_link(self, link: str) -> dict:
-        """Parse a TUIC link into a sing-box configuration."""
-        if not link.startswith("tuic://"):
-            raise ValueError("Not a valid TUIC link")
-
-        try:
-            # Format: tuic://uuid:password@host:port?param=value#remark
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract uuid and password
-            user_info = parsed_url.username or ""
-            if ":" in user_info:
-                uuid, password = user_info.split(":", 1)
-            else:
-                raise ValueError("TUIC link must contain uuid:password")
-
-            # Extract host and port
-            host = parsed_url.hostname
-            port = parsed_url.port or 443
-
-            # Parse query parameters
-            params = dict(urllib.parse.parse_qsl(parsed_url.query))
-
-            # Create outbound configuration for sing-box
-            outbound = {"type": "tuic", "tag": "proxy", "server": host, "server_port": port, "uuid": uuid, "password": password}
-
-            # Handle TLS settings
-            sni = params.get("sni", host)
-            insecure = params.get("insecure", "0") == "1"
-            outbound["tls"] = {"enabled": True, "server_name": sni, "insecure": insecure}
-
-            # Handle optional parameters
-            if params.get("congestion_control"):
-                outbound["congestion_control"] = params.get("congestion_control")
-
-            if params.get("udp_relay_mode"):
-                outbound["udp_relay_mode"] = params.get("udp_relay_mode")
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse TUIC link: {str(e)}")
-            raise ValueError(f"Invalid TUIC format: {str(e)}")
-
-    def _parse_wireguard_link(self, link: str) -> dict:
-        """Parse a WireGuard link into a sing-box configuration."""
-        if not link.startswith("wg://"):
-            raise ValueError("Not a valid WireGuard link")
-
-        try:
-            # Custom WireGuard link format for this implementation
-            # wg://private_key@server:port?public_key=...&local_address=...#remark
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract private key
-            private_key = parsed_url.username or ""
-            if not private_key:
-                raise ValueError("WireGuard link must contain a private key")
-
-            # Extract host and port
-            host = parsed_url.hostname
-            port = parsed_url.port or 51820  # Default WireGuard port
-
-            # Parse query parameters
-            params = dict(urllib.parse.parse_qsl(parsed_url.query))
-
-            peer_public_key = params.get("public_key", "")
-            if not peer_public_key:
-                raise ValueError("WireGuard link must contain a peer_public_key")
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "wireguard",
-                "tag": "proxy",
-                "server": host,
-                "server_port": port,
-                "private_key": private_key,
-                "peer_public_key": peer_public_key,
-                "local_address": params.get("local_address", "172.16.0.2/32").split(","),
-            }
-
-            # Handle optional parameters
-            if params.get("mtu"):
-                outbound["mtu"] = int(params.get("mtu"))
-            if params.get("reserved"):
-                # Format: "1,2,3" -> [1, 2, 3]
-                outbound["reserved"] = [int(b.strip()) for b in params.get("reserved").split(",")]
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse WireGuard link: {str(e)}")
-            raise ValueError(f"Invalid WireGuard format: {str(e)}")
-
-    def _parse_ssh_link(self, link: str) -> dict:
-        """Parse an SSH link into a sing-box configuration."""
-        if not link.startswith("ssh://"):
-            raise ValueError("Not a valid SSH link")
-
-        try:
-            # Format: ssh://user:password@host:port#remark
-            link = urllib.parse.unquote(link)
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract user and password
-            user = parsed_url.username or ""
-            password = parsed_url.password or ""
-
-            # Extract host and port
-            host = parsed_url.hostname
-            port = parsed_url.port or 22
-
-            if not host or not user:
-                raise ValueError("SSH link must contain user and host")
-
-            # Create outbound configuration for sing-box
-            outbound = {"type": "ssh", "tag": "proxy", "server": host, "server_port": port, "user": user}
-
-            if password:
-                outbound["password"] = password
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse SSH link: {str(e)}")
-            raise ValueError(f"Invalid SSH format: {str(e)}")
-
-    def _parse_http_link(self, link: str) -> dict:
-        """Parse an HTTP proxy link into a sing-box configuration."""
-        if not link.startswith("http://") and not link.startswith("https://"):
-            raise ValueError("Not a valid HTTP proxy link")
-
-        try:
-            link = urllib.parse.unquote(link)
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract user and password if present
-            username = parsed_url.username or ""
-            password = parsed_url.password or ""
-
-            # Determine port
-            default_port = 443 if parsed_url.scheme == "https" else 80
-            port = parsed_url.port or default_port
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "http",
-                "tag": "proxy",
-                "server": parsed_url.hostname,
-                "server_port": port,
-            }
-
-            if username:
-                outbound["username"] = username
-            if password:
-                outbound["password"] = password
-
-            # Handle HTTPS
-            if parsed_url.scheme == "https":
-                outbound["tls"] = {"enabled": True, "server_name": parsed_url.hostname}
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse HTTP link: {str(e)}")
-            raise ValueError(f"Invalid HTTP format: {str(e)}")
-
-    def _parse_socks_link(self, link: str) -> dict:
-        """Parse a SOCKS link into a sing-box configuration."""
-        if not link.startswith("socks://") and not link.startswith("socks5://") and not link.startswith("socks4://"):
-            raise ValueError("Not a valid SOCKS link")
-
-        try:
-            link = urllib.parse.unquote(link)
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Extract user and password if present
-            username = parsed_url.username or ""
-            password = parsed_url.password or ""
-
-            # Determine SOCKS version
-            version = "5"  # Default to SOCKS5
-            if parsed_url.scheme == "socks4":
-                version = "4"
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "socks",
-                "tag": "proxy",
-                "server": parsed_url.hostname,
-                "server_port": parsed_url.port or 1080,
-                "version": version,
-            }
-
-            if username:
-                outbound["username"] = username
-            if password:
-                outbound["password"] = password
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse SOCKS link: {str(e)}")
-            raise ValueError(f"Invalid SOCKS format: {str(e)}")
-
-    def _parse_hysteria_link(self, link: str) -> dict:
-        """Parse a Hysteria (v1) link into a sing-box configuration."""
-        if not link.startswith("hysteria://"):
-            raise ValueError("Not a valid Hysteria link")
-
-        try:
-            # Format: hysteria://host:port?auth=password&param=value#remark
-            link = urllib.parse.unquote(link.replace("&amp;", "&"))
-            parsed_url = urllib.parse.urlparse(link)
-
-            # Parse query parameters
-            params = dict(urllib.parse.parse_qsl(parsed_url.query))
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "hysteria",
-                "tag": "proxy",
-                "server": parsed_url.hostname,
-                "server_port": parsed_url.port,
-                "auth_str": params.get("auth", ""),
-            }
-
-            # Handle TLS settings
-            sni = params.get("peer", parsed_url.hostname)
-            insecure = params.get("insecure", "0") == "1"
-            outbound["tls"] = {
-                "enabled": True,
-                "server_name": sni,
-                "insecure": insecure,
-            }
-
-            # Handle optional parameters
-            if params.get("upmbps"):
-                outbound["up_mbps"] = int(params.get("upmbps"))
-            if params.get("downmbps"):
-                outbound["down_mbps"] = int(params.get("downmbps"))
-            if params.get("obfs"):
-                outbound["obfs"] = params.get("obfs")
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse Hysteria link: {str(e)}")
-            raise ValueError(f"Invalid Hysteria format: {str(e)}")
-
-    def _parse_naiveproxy_link(self, link: str) -> dict:
-        """Parse a NaiveProxy link into a sing-box configuration."""
-        if not link.startswith("naive+https://"):
-            raise ValueError("Not a valid NaiveProxy link")
-
-        try:
-            # Remove naive+ prefix
-            https_url = urllib.parse.unquote(link[6:])  # Remove "naive+"
-            parsed_url = urllib.parse.urlparse(https_url)
-
-            # Extract user and password
-            username = parsed_url.username or ""
-            password = parsed_url.password or ""
-
-            # Create outbound configuration for sing-box
-            outbound = {
-                "type": "naive",
-                "tag": "proxy",
-                "server": parsed_url.hostname,
-                "server_port": parsed_url.port or 443,
-            }
-            if username:
-                outbound["username"] = username
-            if password:
-                outbound["password"] = password
-
-            # NaiveProxy always uses TLS
-            outbound["tls"] = {"enabled": True, "server_name": parsed_url.hostname}
-
-            return outbound
-        except Exception as e:
-            logger.error(f"Failed to parse NaiveProxy link: {str(e)}")
-            raise ValueError(f"Invalid NaiveProxy format: {str(e)}")
-
-    def generate_config(self, chain_proxy=None):
+    _SENTINEL = object()
+
+    def _parse_core_version(self) -> tuple:
+        """Return installed sing-box version as a tuple, e.g. (1, 13, 0).
+
+        Falls back to (99, 0, 0) if version can't be determined (assume latest).
+        """
+        ver = self.core.version if self.core else None
+        if ver:
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", ver)
+            if m:
+                return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return (99, 0, 0)
+
+    @staticmethod
+    def _wireguard_to_endpoint(outbound: dict) -> dict:
+        """Convert a WireGuard parser dict to sing-box endpoint format."""
+        peer = {
+            "address": outbound["server"],
+            "port": outbound["server_port"],
+            "public_key": outbound["peer_public_key"],
+            "allowed_ips": ["0.0.0.0/0", "::/0"],
+        }
+        if outbound.get("reserved"):
+            peer["reserved"] = outbound["reserved"]
+        if outbound.get("pre_shared_key"):
+            peer["pre_shared_key"] = outbound["pre_shared_key"]
+
+        endpoint = {
+            "type": "wireguard",
+            "tag": outbound.get("tag", "proxy"),
+            "private_key": outbound["private_key"],
+            "address": outbound["local_address"],
+            "peers": [peer],
+        }
+        if outbound.get("mtu"):
+            endpoint["mtu"] = outbound["mtu"]
+        return endpoint
+
+    def generate_config(self, chain_proxy=_SENTINEL):
         """Generate a sing-box configuration from a proxy link.
 
         Automatically parses the proxy link provided during initialization and converts it
         into a complete sing-box configuration with appropriate inbound and outbound settings.
 
         Args:
-            chain_proxy: Optional SingBoxProxy instance to chain through. When provided,
-                        this proxy will route all traffic through the specified chain proxy.
-                        Not all protocols support chaining, refer to the https://sing-box.sagernet.org/configuration/inbound/
+            chain_proxy: Optional SingBoxProxy instance to chain through.
+                        If not provided, falls back to self.chain_proxy.
 
         Returns:
             dict: Complete sing-box configuration dictionary ready to be serialized to JSON.
@@ -2578,61 +2237,24 @@ class SingBoxProxy:
         Raises:
             ValueError: If the proxy link format is invalid or unsupported.
             RuntimeError: If configuration generation fails.
-
-        Supported Protocols:
-            - VMess (vmess://)
-            - VLESS (vless://)
-            - Shadowsocks (ss://)
-            - Trojan (trojan://)
-            - Hysteria v1 (hysteria://)
-            - Hysteria v2 (hy2://, hysteria2://)
-            - TUIC (tuic://)
-            - WireGuard (wg://)
-            - SSH (ssh://)
-            - SOCKS (socks://, socks4://, socks5://)
-            - HTTP/HTTPS (http://, https://)
-            - NaiveProxy (naive+https://)
-
-        Note:
-            This method is automatically called during initialization unless config_only=False.
-            The generated configuration includes SOCKS5 and/or HTTP inbound servers on the
-            configured ports.
         """
+        if chain_proxy is self._SENTINEL:
+            chain_proxy = self.chain_proxy
         try:
+            # Detect installed sing-box version for compatibility
+            core_version = self._parse_core_version()
+
             # Handle direct connection relay (no proxy URL provided)
             if self.config_url is None:
-                # Create direct outbound for relay
                 outbound = {"type": "direct", "tag": "proxy"}
-            # Determine the type of link and parse accordingly
-            elif self.config_url.startswith("vmess://"):
-                outbound = self._parse_vmess_link(self.config_url)
-            elif self.config_url.startswith("vless://"):
-                outbound = self._parse_vless_link(self.config_url)
-            elif self.config_url.startswith("ss://"):
-                outbound = self._parse_shadowsocks_link(self.config_url)
-            elif self.config_url.startswith("trojan://"):
-                outbound = self._parse_trojan_link(self.config_url)
-            elif self.config_url.startswith(("hy2://", "hysteria2://")):
-                outbound = self._parse_hysteria2_link(self.config_url)
-            elif self.config_url.startswith("hysteria://"):
-                outbound = self._parse_hysteria_link(self.config_url)
-            elif self.config_url.startswith("tuic://"):
-                outbound = self._parse_tuic_link(self.config_url)
-            elif self.config_url.startswith("wg://"):
-                outbound = self._parse_wireguard_link(self.config_url)
-            elif self.config_url.startswith("ssh://"):
-                outbound = self._parse_ssh_link(self.config_url)
-            elif self.config_url.startswith(("socks://", "socks4://", "socks5://")):
-                outbound = self._parse_socks_link(self.config_url)
-            elif self.config_url.startswith("naive+https://"):
-                outbound = self._parse_naiveproxy_link(self.config_url)
-            elif self.config_url.startswith(("http://", "https://")):
-                outbound = self._parse_http_link(self.config_url)
             else:
-                raise ValueError(f"Unsupported link type: {self.config_url[:15]}...")
+                outbound = parse_link(self.config_url)
 
             # Handle proxy chaining
-            outbounds = [{"type": "direct", "tag": "direct"}, {"type": "block", "tag": "block"}]
+            # "block" outbound was removed in sing-box 1.13
+            outbounds = [{"type": "direct", "tag": "direct"}]
+            if core_version < (1, 13, 0):
+                outbounds.append({"type": "block", "tag": "block"})
 
             if chain_proxy:
                 # Add chain proxy outbound
@@ -2657,19 +2279,37 @@ class SingBoxProxy:
                 # Configure main proxy to use chain proxy
                 outbound["detour"] = "chain-proxy"
 
-            outbounds.insert(0, outbound)
+            # WireGuard: convert to endpoint format (1.11+) or keep legacy outbound (<1.11)
+            # When chain_proxy is set, keep legacy outbound (endpoints don't support detour)
+            is_wireguard = outbound.get("type") == "wireguard"
+            if is_wireguard and core_version >= (1, 11, 0) and not chain_proxy:
+                wg_endpoint = self._wireguard_to_endpoint(outbound)
+                config = {
+                    "inbounds": [],
+                    "outbounds": outbounds,
+                    "endpoints": [wg_endpoint],
+                }
+                wg_final_tag = wg_endpoint["tag"]
+            else:
+                outbounds.insert(0, outbound)
+                config = {
+                    "inbounds": [],
+                    "outbounds": outbounds,
+                }
+                wg_final_tag = None
 
-            # Create a basic sing-box configuration with SOCKS and HTTP inbounds
-            config = {
-                "inbounds": [],
-                "outbounds": outbounds,
-            }
-
-            # Add route section if provided
+            # Add route section if provided (merge, don't overwrite)
             if self.route:
-                config["route"] = self.route
+                if "route" in config:
+                    config["route"].update(self.route)
+                else:
+                    config["route"] = dict(self.route)
 
-            # Add TUN inbound if enabled
+            # WireGuard endpoint requires explicit route.final (set after user route to prevent override)
+            if wg_final_tag:
+                config.setdefault("route", {})["final"] = wg_final_tag
+
+            # Add TUN inbound if enabled (system-wide VPN mode)
             if self.tun_enabled:
                 tun_inbound = {
                     "type": "tun",
@@ -2680,19 +2320,61 @@ class SingBoxProxy:
                     "auto_route": self.tun_auto_route,
                     "strict_route": True,
                     "stack": self.tun_stack,
-                    "sniff": True,
-                    "sniff_override_destination": False,
                 }
+                # sniff on inbound: works <1.13
+                if core_version < (1, 13, 0):
+                    tun_inbound["sniff"] = True
+                    tun_inbound["sniff_override_destination"] = True
                 config["inbounds"].append(tun_inbound)
 
+                if "route" not in config:
+                    config["route"] = {}
+                config["route"]["auto_detect_interface"] = True
+                if "final" not in config["route"]:
+                    config["route"]["final"] = outbound.get("tag", "proxy")
+                if "rules" not in config["route"]:
+                    config["route"]["rules"] = []
+
+                # 1.13+: sniff moved from inbound to route rules
+                if core_version >= (1, 13, 0):
+                    config["route"]["rules"].insert(0, {"action": "sniff"})
+
+                # DNS hijack: intercept DNS packets from TUN and resolve via sing-box DNS
+                if core_version >= (1, 11, 0):
+                    config["route"]["rules"].append({"protocol": "dns", "action": "hijack-dns"})
+                else:
+                    # <1.11: needs explicit dns outbound
+                    config["outbounds"].append({"type": "dns", "tag": "dns-out"})
+                    config["route"]["rules"].append({"protocol": "dns", "outbound": "dns-out"})
+
+                # Use DoH to 1.1.1.1 (IP, no resolution needed) through proxy.
+                # direct-dns resolves proxy server's own domain to avoid circular dependency.
+                if core_version >= (1, 14, 0):
+                    # New DNS server format (legacy removed in 1.14)
+                    config["dns"] = {
+                        "servers": [
+                            {"type": "https", "tag": "proxy-dns", "server": "1.1.1.1", "detour": outbound.get("tag", "proxy")},
+                            {"type": "https", "tag": "direct-dns", "server": "1.1.1.1", "detour": "direct"},
+                        ],
+                        "strategy": "prefer_ipv4",
+                    }
+                    # 1.12+: domain_resolver on route replaces outbound DNS rules
+                    config["route"]["default_domain_resolver"] = "direct-dns"
+                else:
+                    # Legacy DNS format (works through 1.13.x)
+                    config["dns"] = {
+                        "servers": [
+                            {"tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": outbound.get("tag", "proxy")},
+                            {"tag": "direct-dns", "address": "https://1.1.1.1/dns-query", "detour": "direct"},
+                        ],
+                        "rules": [{"outbound": "any", "server": "direct-dns"}],
+                        "strategy": "prefer_ipv4",
+                    }
+
             if self.socks_port:
-                config["inbounds"] += [
-                    {"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": self.socks_port, "users": []}
-                ]
+                config["inbounds"] += [{"type": "socks", "tag": "socks-in", "listen": "127.0.0.1", "listen_port": self.socks_port}]
             if self.http_port:
-                config["inbounds"] += [
-                    {"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": self.http_port, "users": []}
-                ]
+                config["inbounds"] += [{"type": "http", "tag": "http-in", "listen": "127.0.0.1", "listen_port": self.http_port}]
 
             # Add relay inbound if enabled
             if self.relay_protocol and self.relay_port:
@@ -2768,7 +2450,7 @@ class SingBoxProxy:
                 with open(self.config_file, "r") as f:
                     config = json.load(f)
             else:
-                config = self.generate_config(self.chain_proxy)
+                config = self.generate_config()
         elif isinstance(content, str):
             config = json.loads(content)
         elif isinstance(content, dict):
@@ -2776,8 +2458,17 @@ class SingBoxProxy:
         else:
             raise TypeError("content must be None, str, or dict")
 
-        # Log the generated config for debugging
-        logger.debug(f"Generated sing-box config: {json.dumps(config, indent=2)}")
+        # Log config structure for debugging (credentials redacted)
+        _redact_keys = {"uuid", "password", "private_key", "pre_shared_key", "auth_str", "short_id", "public_key"}
+
+        def _redact(obj):
+            if isinstance(obj, dict):
+                return {k: ("***" if k in _redact_keys and v else _redact(v)) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_redact(i) for i in obj]
+            return obj
+
+        logger.debug(f"Generated sing-box config: {json.dumps(_redact(config), indent=2)}")
 
         # Create a temporary file for the configuration
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as temp_file:
@@ -2785,6 +2476,11 @@ class SingBoxProxy:
             json_config = json.dumps(config, indent=2)
             temp_file.write(json_config.encode("utf-8"))
             logger.debug(f"Wrote config to {temp_file_path}")
+
+        try:
+            os.chmod(temp_file_path, 0o600)
+        except OSError:
+            pass
 
         self.config_file = temp_file_path
         return temp_file_path
@@ -2816,10 +2512,11 @@ class SingBoxProxy:
                 s.settimeout(0.01)
                 return s.connect_ex(("127.0.0.1", port)) == 0
 
+        sleep_time = 0.01
         while time.time() - start_time < timeout:
             # First check if process is still running
             if self.singbox_process.poll() is not None:
-                time.sleep(0.001)
+                time.sleep(0.01)
                 stdout = self.stdout
                 stderr = self.stderr
                 error_msg = (
@@ -2837,7 +2534,8 @@ class SingBoxProxy:
                 last_error = str(e)
                 logger.debug(f"Proxy not ready yet: {last_error}")
 
-            time.sleep(0.001)
+            time.sleep(sleep_time)
+            sleep_time = min(sleep_time * 1.5, 0.2)  # Cap at 200ms
 
         # If we get here, the proxy didn't become ready in time
         if self.singbox_process.poll() is not None:
@@ -2942,6 +2640,12 @@ class SingBoxProxy:
                 config_path = str(self.config_path)
             else:
                 config_path = self.create_config_file()
+
+            # Validate configuration before starting
+            if self.core and self.core.executable:
+                is_valid, msg = self.core.check_config(config_path)
+                if not is_valid:
+                    raise ValueError(f"Invalid sing-box configuration: {msg}")
 
             # Prepare command and environment
             cmd = [self.core.executable, "run", "-c", config_path]
@@ -3073,6 +2777,13 @@ class SingBoxProxy:
                 self.running = False
                 logger.info("sing-box process stopped")
 
+                # Close HTTP client session to release pooled connections
+                if hasattr(self, "client") and self.client and hasattr(self.client, "close"):
+                    try:
+                        self.client.close()
+                    except Exception:
+                        pass
+
             except Exception as e:
                 logger.error(f"Error stopping sing-box: {str(e)}")
             finally:
@@ -3124,12 +2835,22 @@ class SingBoxProxy:
             finally:
                 self.config_file = None
 
+        for path in getattr(self, "_tls_temp_files", []):
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
+        self._tls_temp_files = []
+
         # Release allocated ports
         with _port_allocation_lock:
             if hasattr(self, "http_port") and self.http_port:
                 _allocated_ports.discard(self.http_port)
             if hasattr(self, "socks_port") and self.socks_port:
                 _allocated_ports.discard(self.socks_port)
+            if hasattr(self, "relay_port") and self.relay_port:
+                _allocated_ports.discard(self.relay_port)
 
         # Close std stream threads
         if self._stdout_thread and self._stdout_thread.is_alive():
@@ -3509,7 +3230,8 @@ class SingBoxProxy:
         """Get the CPU usage percentage of the sing-box process.
 
         Requires psutil to be installed. Returns 0 if psutil is not available or
-        if the process is not running. The percentage can exceed 100% on multi-core systems.
+        if the process is not running. Uses non-blocking measurement (interval=0);
+        the first call always returns 0.0, subsequent calls return meaningful values.
 
         Returns:
             float: CPU usage as a percentage (0.0 to N*100.0 where N is the number of cores).
@@ -3522,7 +3244,7 @@ class SingBoxProxy:
         try:
             process = self.psutil_process
             if process:
-                return process.cpu_percent(interval=1)
+                return process.cpu_percent(interval=0)
         except Exception as exc:
             logger.debug(f"Error getting CPU usage: {exc}")
         return 0
@@ -3628,658 +3350,3 @@ class SingBoxProxy:
             self._safe_cleanup()
         except Exception:
             pass
-
-
-def _import_request_module():
-    try:
-        import curl_cffi  # type: ignore
-
-        return curl_cffi
-    except ImportError:
-        try:
-            import requests
-
-            return requests
-        except ImportError:
-            return None
-
-
-default_request_module = _import_request_module()
-
-
-class SingBoxClient:
-    """HTTP client for making requests through SingBox proxies.
-
-    This class provides an interface for making HTTP requests through a SingBoxProxy
-    instance. It automatically configures proxy settings, handles retries, and supports both
-    curl-cffi and requests libraries as backends.
-
-    The client uses connection pooling via sessions and supports
-    automatic retry logic with exponential backoff. It can be used standalone or as part
-    of a SingBoxProxy instance.
-
-    Example:
-        Basic usage with SingBoxProxy:
-        >>> proxy = SingBoxProxy("vmess://...")
-        >>> client = SingBoxClient(client=proxy)
-        >>> response = client.get("https://api.ipify.org")
-        >>> print(response.text)
-
-        Standalone usage with custom retry settings:
-        >>> client = SingBoxClient(auto_retry=True, retry_times=5, timeout=30)
-        >>> response = client.post("https://example.com/api", json={"key": "value"})
-
-        Context manager usage:
-        >>> with SingBoxClient(client=proxy) as client:
-        ...     response = client.get("https://example.com")
-        ...     print(response.status_code)
-
-        Custom module usage:
-        >>> import requests
-        >>> client = SingBoxClient(module=requests, timeout=20)
-    """
-
-    def __init__(
-        self,
-        client=None,
-        auto_retry: bool = True,
-        retry_times: int = 2,
-        timeout: int = 10,
-        module=None,
-        proxies: dict | None = None,
-    ):
-        """Initialize a SingBoxClient instance.
-
-        Args:
-            client: Optional SingBoxProxy instance to use for proxy configuration.
-                   If provided, the client will automatically use this proxy's settings
-                   for all requests.
-            auto_retry: Enable automatic retry on failed requests. When True, failed
-                       requests will be retried up to retry_times attempts with
-                       exponential backoff (default: True).
-            retry_times: Maximum number of retry attempts for failed requests. Only
-                        applies if auto_retry is True (default: 2).
-            timeout: Default timeout in seconds for all requests. Can be overridden
-                    per request by passing timeout in kwargs (default: 10).
-            module: HTTP library to use for making requests. Can be curl_cffi.requests
-                   or requests. If None, will auto-detect available library, preferring
-                   curl-cffi (default: None).
-            proxies: Explicit proxies mapping to use (same format as requests). When
-                     provided, it overrides any proxy provided by the SingBoxProxy instance.
-
-        Raises:
-            ImportError: If no suitable HTTP request module is available.
-
-        Note:
-            The client preferentially uses curl-cffi if available, falling back to
-            requests. Install either 'curl-cffi' or 'requests' package to use this client.
-        """
-        self.client = client
-        self._proxy_override = proxies
-        self.proxy = proxies
-        self.auto_retry = auto_retry
-        self.retry_times = retry_times
-        self.timeout = timeout
-        self.module = module or default_request_module
-        self._session = None
-        self._session_lock = threading.RLock()
-        self._request_func = None
-
-    def _set_parent(self, proxy: "SingBoxProxy"):
-        """Attach this client to a SingBoxProxy instance without re-instantiation."""
-        self.client = proxy
-        self.proxy = None
-        return self
-
-    def _ensure_request_callable(self):
-        """Ensure that a request callable function is available from the module.
-
-        Internal method that locates and caches the request function from the configured
-        HTTP library module. Handles both direct module attributes and nested attributes
-        (e.g., curl_cffi.requests.request).
-
-        Returns:
-            callable | None: The request function if found, None otherwise.
-
-        Note:
-            This method caches the result in self._request_func for performance.
-        """
-        if self._request_func is None and self.module is not None:
-            request_callable = getattr(self.module, "request", None)
-            if request_callable is None:
-                nested = getattr(self.module, "requests", None)
-                if nested:
-                    request_callable = getattr(nested, "request", None)
-            self._request_func = request_callable
-        return self._request_func
-
-    def _get_session(self):
-        """Get or create a session object for connection pooling.
-
-        Internal method that lazily creates and caches a session object from the
-        configured HTTP library. Sessions provide connection pooling for better
-        performance on multiple requests. This method is thread-safe.
-
-        Returns:
-            Session | None: Session object if available, None otherwise.
-
-        Note:
-            The session is cached in self._session and reused across requests.
-            Supports both requests.Session and curl_cffi.requests.Session.
-        """
-        if self.module is None:
-            return None
-        if self._session is not None:
-            return self._session
-        with self._session_lock:
-            if self._session is not None:
-                return self._session
-            candidates = []
-            for attr in ("Session", "session"):
-                candidate = getattr(self.module, attr, None)
-                if candidate:
-                    candidates.append(candidate)
-            nested = getattr(self.module, "requests", None)
-            if nested:
-                for attr in ("Session", "session"):
-                    candidate = getattr(nested, attr, None)
-                    if candidate:
-                        candidates.append(candidate)
-            for candidate in candidates:
-                try:
-                    session = candidate() if callable(candidate) else candidate
-                except Exception:
-                    continue
-                if hasattr(session, "request"):
-                    self._session = session
-                    break
-            return self._session
-
-    def _get_proxy_mapping(self):
-        """Resolve the proxy configuration for outbound HTTP requests."""
-        if self._proxy_override is not None:
-            self.proxy = self._proxy_override
-            return self._proxy_override
-        if self.client:
-            mapping = self.client.proxy_for_requests
-            self.proxy = mapping
-            return mapping
-        self.proxy = None
-        return None
-
-    @staticmethod
-    def _proxies_require_socks(proxies) -> bool:
-        if not proxies:
-            return False
-        for value in proxies.values():
-            if isinstance(value, str) and value.lower().startswith("socks"):
-                return True
-        return False
-
-    def _request_backend_supports_socks(self) -> bool:
-        if self.module is None:
-            return False
-        module_name = getattr(self.module, "__name__", self.module.__class__.__name__).lower()
-        if module_name.startswith("curl_cffi"):
-            return True
-        if "requests" in module_name:
-            return self._has_pysocks()
-        return True
-
-    @staticmethod
-    def _has_pysocks() -> bool:
-        return _has_pysocks_support()
-
-    def _validate_proxy_support(self, proxies):
-        if not proxies:
-            raise RuntimeError("No proxy mapping provided to SingBoxClient.")
-        if not self._proxies_require_socks(proxies):
-            return
-        if not self._request_backend_supports_socks():
-            raise RuntimeError(
-                "SOCKS proxies require the 'pysocks' package when using requests. "
-                "Install pysocks or enable the HTTP inbound port to avoid leaking traffic."
-            )
-
-    def close(self):
-        """Close the session and release resources.
-
-        Closes the underlying HTTP session if it exists, releasing any pooled
-        connections. This method is automatically called by __del__ and __exit__,
-        but can be called manually if needed.
-
-        Note:
-            After calling close(), a new session will be created on the next request.
-            This method is thread-safe.
-        """
-        if self._session and hasattr(self._session, "close"):
-            try:
-                self._session.close()
-            except Exception:
-                pass
-        self._session = None
-
-    def request(self, method: str, url: str, **kwargs):
-        """Make an HTTP request with automatic retry logic.
-
-        Core method for making HTTP requests through the configured proxy (if any).
-        Supports automatic retries with exponential backoff on failures. Automatically
-        configures timeout and proxy settings if not explicitly provided.
-
-        Args:
-            method: HTTP method to use (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS, etc.).
-            url: Target URL for the request.
-            **kwargs: Additional arguments to pass to the underlying request function.
-                     Common arguments include:
-                     - headers (dict): HTTP headers
-                     - data: Request body (for POST, PUT, etc.)
-                     - json: JSON data to send (automatically sets Content-Type)
-                     - params (dict): URL query parameters
-                     - timeout (int/float): Override default timeout
-                     - proxies (dict): Override default proxy settings
-                     - retries (int): Override default retry count for this request
-                     - verify (bool): SSL certificate verification (default: True)
-                     - allow_redirects (bool): Follow redirects (default: True)
-
-        Returns:
-            Response: HTTP response object from the underlying library.
-
-        Raises:
-            ImportError: If no HTTP request module is available.
-            HTTPError: If the request fails after all retry attempts.
-            Timeout: If the request times out.
-            ConnectionError: If connection to the server fails.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.request("GET", "https://api.ipify.org")
-            >>> print(response.text)
-
-            >>> response = client.request("POST", "https://example.com/api",
-            ...                          json={"key": "value"},
-            ...                          headers={"Authorization": "Bearer token"})
-
-            >>> # Disable retries for a specific request
-            >>> response = client.request("GET", "https://example.com", retries=0)
-
-        Note:
-            - Retries use exponential backoff: 0.2s, 0.4s, 0.6s, ... up to 1s max
-            - The 'retries' kwarg overrides the instance's retry_times setting
-            - Failed requests that exhaust retries will raise the last exception
-        """
-        start_time = time.time()
-        if self.module is None:
-            raise ImportError("No HTTP request module available. Please install 'curl-cffi' or 'requests'.")
-        request_callable = self._ensure_request_callable()
-        if request_callable is None:
-            raise ImportError("The configured request module does not expose a request() function.")
-        session = self._get_session()
-        if session and hasattr(session, "request"):
-            request_callable = session.request
-
-        if kwargs.get("timeout") is None:
-            kwargs["timeout"] = self.timeout
-
-        proxies = kwargs.get("proxies")
-        if proxies is None:
-            proxies = self._get_proxy_mapping()
-            if proxies is None:
-                raise RuntimeError("No proxy configuration available. Attach a SingBoxProxy instance or pass proxies= explicitly.")
-            kwargs["proxies"] = proxies
-
-        self._validate_proxy_support(kwargs["proxies"])
-
-        base_kwargs = dict(kwargs)
-        retry_times = base_kwargs.pop("retries", self.retry_times if self.auto_retry else 0)
-        attempts = 0
-        while attempts <= retry_times:
-            try:
-                response = request_callable(method=method, url=url, **dict(base_kwargs))
-                response.raise_for_status()
-                logger.debug(f"Request to {url} succeeded in {time.time() - start_time:.2f} seconds")
-                return response
-            except Exception as e:
-                if attempts < retry_times:
-                    attempts += 1
-                    time.sleep(min(0.2 * attempts, 1))
-                    continue
-                logger.error(f"Request to {url} failed after {attempts} attempts: {str(e)} and {time.time() - start_time:.2f} seconds")
-                raise e
-
-    def get(self, url, **kwargs):
-        """Make a GET request.
-
-        Method for making GET requests. Equivalent to calling
-        request("GET", url, **kwargs).
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.get("https://api.ipify.org")
-            >>> print(response.text)
-
-            >>> # With query parameters
-            >>> response = client.get("https://example.com/api", params={"key": "value"})
-        """
-        return self.request("GET", url, **kwargs)
-
-    def post(self, url, **kwargs):
-        """Make a POST request.
-
-        Method for making POST requests. Equivalent to calling
-        request("POST", url, **kwargs).
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request(). Common kwargs:
-                     - data: Form data or raw body
-                     - json: JSON data (automatically sets Content-Type)
-                     - files: Files to upload
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.post("https://example.com/api", json={"key": "value"})
-
-            >>> # With form data
-            >>> response = client.post("https://example.com/form",
-            ...                       data={"field1": "value1", "field2": "value2"})
-        """
-        return self.request("POST", url, **kwargs)
-
-    def put(self, url, **kwargs):
-        """Make a PUT request.
-
-        Method for making PUT requests. Equivalent to calling
-        request("PUT", url, **kwargs).
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.put("https://example.com/api/resource/123",
-            ...                       json={"updated": "data"})
-        """
-        return self.request("PUT", url, **kwargs)
-
-    def delete(self, url, **kwargs):
-        """Make a DELETE request.
-
-        Method for making DELETE requests. Equivalent to calling
-        request("DELETE", url, **kwargs).
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.delete("https://example.com/api/resource/123")
-        """
-        return self.request("DELETE", url, **kwargs)
-
-    def patch(self, url, **kwargs):
-        """Make a PATCH request.
-
-        Method for making PATCH requests. Equivalent to calling
-        request("PATCH", url, **kwargs).
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.patch("https://example.com/api/resource/123",
-            ...                         json={"field": "updated_value"})
-        """
-        return self.request("PATCH", url, **kwargs)
-
-    def head(self, url, **kwargs):
-        """Make a HEAD request.
-
-        Method for making HEAD requests. Equivalent to calling
-        request("HEAD", url, **kwargs). HEAD requests are like GET but only
-        return headers without the response body.
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object (without body content).
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.head("https://example.com/large-file.zip")
-            >>> print(f"Content-Length: {response.headers.get('Content-Length')}")
-        """
-        return self.request("HEAD", url, **kwargs)
-
-    def options(self, url, **kwargs):
-        """Make an OPTIONS request.
-
-        Method for making OPTIONS requests. Equivalent to calling
-        request("OPTIONS", url, **kwargs). OPTIONS requests are used to check
-        which HTTP methods are supported by a server.
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            Response: HTTP response object.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> response = client.options("https://example.com/api")
-            >>> print(f"Allowed methods: {response.headers.get('Allow')}")
-        """
-        return self.request("OPTIONS", url, **kwargs)
-
-    def download(self, url, destination, chunk_size=8192, **kwargs):
-        """Download a file from a URL to a local destination.
-
-        Downloads large files efficiently using streaming to avoid loading
-        the entire file into memory. Shows progress if logging is enabled.
-
-        Args:
-            url: URL of the file to download.
-            destination: Local file path where the file should be saved.
-            chunk_size: Size of chunks to read/write at a time in bytes (default: 8192).
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            str: Path to the downloaded file (same as destination).
-
-        Raises:
-            IOError: If file cannot be written.
-            HTTPError: If download request fails.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> client.download("https://example.com/file.zip", "/tmp/file.zip")
-            '/tmp/file.zip'
-
-            >>> # With custom chunk size
-            >>> client.download("https://example.com/bigfile.iso",
-            ...                "/tmp/bigfile.iso",
-            ...                chunk_size=65536)
-        """
-        kwargs.setdefault("stream", True)
-        response = self.request("GET", url, **kwargs)
-        response.raise_for_status()
-
-        total_size = int(response.headers.get("content-length", 0))
-        downloaded = 0
-
-        with open(destination, "wb") as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        progress = (downloaded / total_size) * 100
-                        logger.debug(f"Download progress: {progress:.1f}% ({downloaded}/{total_size} bytes)")
-
-        logger.info(f"Downloaded {url} to {destination} ({downloaded} bytes)")
-        return destination
-
-    def get_json(self, url, **kwargs):
-        """Make a GET request and parse JSON response.
-
-        Convenience method that combines a GET request with JSON parsing.
-
-        Args:
-            url: Target URL for the request.
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            dict | list: Parsed JSON response.
-
-        Raises:
-            JSONDecodeError: If response is not valid JSON.
-            HTTPError: If request fails.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> data = client.get_json("https://api.example.com/data")
-            >>> print(data["key"])
-        """
-        response = self.get(url, **kwargs)
-        return response.json()
-
-    def post_json(self, url, json_data=None, **kwargs):
-        """Make a POST request with JSON data and parse JSON response.
-
-        Convenience method that combines a POST request with JSON input/output.
-
-        Args:
-            url: Target URL for the request.
-            json_data: JSON-serializable data to send (dict, list, etc.).
-            **kwargs: Additional arguments passed to request().
-
-        Returns:
-            dict | list: Parsed JSON response.
-
-        Raises:
-            JSONDecodeError: If response is not valid JSON.
-            HTTPError: If request fails.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> result = client.post_json("https://api.example.com/endpoint",
-            ...                          json_data={"key": "value"})
-            >>> print(result["status"])
-        """
-        response = self.post(url, json=json_data, **kwargs)
-        return response.json()
-
-    @property
-    def is_session_active(self):
-        """Check if a session is currently active.
-
-        Returns:
-            bool: True if session exists and is not None, False otherwise.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy)
-            >>> print(client.is_session_active)
-            False
-            >>> client.get("https://example.com")
-            >>> print(client.is_session_active)
-            True
-        """
-        return self._session is not None
-
-    def __repr__(self):
-        """Return a detailed string representation of the client.
-
-        Returns:
-            str: Representation string with key configuration details.
-
-        Example:
-            >>> client = SingBoxClient(client=proxy, timeout=20)
-            >>> print(repr(client))
-            <SingBoxClient proxy=True timeout=20 auto_retry=True retry_times=2 session=True>
-        """
-        has_proxy = self.proxy is not None or self._proxy_override is not None or self.client is not None
-        return (
-            f"<SingBoxClient proxy={has_proxy} "
-            f"timeout={self.timeout} auto_retry={self.auto_retry} "
-            f"retry_times={self.retry_times} session={self.is_session_active}>"
-        )
-
-    def __enter__(self):
-        """Context manager entry.
-
-        Allows using SingBoxClient with the 'with' statement for automatic cleanup.
-
-        Returns:
-            SingBoxClient: Returns self for use in the context.
-
-        Example:
-            >>> with SingBoxClient(client=proxy) as client:
-            ...     response = client.get("https://example.com")
-            ...     print(response.text)
-            # Session is automatically closed after the block
-        """
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit.
-
-        Automatically closes the session when exiting the 'with' block.
-
-        Args:
-            exc_type: Exception type if an exception occurred, None otherwise.
-            exc_val: Exception value if an exception occurred, None otherwise.
-            exc_tb: Exception traceback if an exception occurred, None otherwise.
-
-        Returns:
-            bool: False to propagate any exception that occurred in the context.
-        """
-        try:
-            self.close()
-        except Exception:
-            pass
-        return False
-
-    def __del__(self):
-        """Ensure resources are cleaned up when the object is garbage collected.
-
-        Automatically called when the object is about to be destroyed. Closes
-        the session and stops the associated proxy client if any.
-
-        Note:
-            While this provides a safety net, it's better to explicitly call close()
-            or use the context manager pattern for predictable cleanup timing.
-        """
-        try:
-            self.close()
-        except Exception:
-            pass
-        if self.client:
-            try:
-                self.client.stop()
-            except Exception:
-                pass

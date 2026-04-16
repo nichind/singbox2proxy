@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sb2p"
+version = "0.3.0"
+authors = [{name = "nichind", email = "nichind@proton.me"}]
+description = "Alias for singbox2proxy — pip install sb2p"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+keywords = ["sing-box", "proxy", "sb2p", "singbox2proxy"]
+dependencies = ["singbox2proxy==0.3.0"]
+
+[project.scripts]
+sb2p = "singbox2proxy.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/nichind/singbox2proxy"
+
+[tool.setuptools]
+packages = ["sb2p"]

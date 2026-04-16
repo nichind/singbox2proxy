@@ -1,7 +1,11 @@
 # Ignore everything
 /*
+dist/
+build/
+*.egg-info/
 
 !/singbox2proxy/
+!/sb2p/
 !/tests/
 *.pyc
 __pycache__/

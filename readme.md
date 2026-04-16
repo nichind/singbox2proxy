@@ -7,6 +7,7 @@ Integrate sing-box proxies into your python applications with ease on any device
 - sing-box auto-install & easy management
 - zero dependencies for base functionality
 - seamless integration with existing applications
+- batch proxy engine with shared singbox process
 - tuned for best performance and latency in mind
 
 ### Supported Protocols
@@ -112,6 +113,91 @@ print(response.status_code, response.text)  # 200, {"ip": "<proxy2's IP>"}
 # Here, requests made through `proxy2` will first go through `proxy1`, then proxy1 will forward the request to proxy2, and finally proxy2 will send the request to the target server.
 ```
 
+#### Batch Engine
+
+Run hundreds of proxies through shared sing-box processes (~30 MB per batch instead of per proxy):
+
+```python
+from singbox2proxy import SingBoxBatch
+
+# From a list
+batch = SingBoxBatch(["vless://...", "trojan://...", "ss://..."])
+
+# From a file (one URL per line, # comments)
+batch = SingBoxBatch.from_file("proxies.txt")
+
+# With options
+batch = SingBoxBatch(urls, batch_size=30, log_level="error")
+```
+
+**Use proxies** — each one gets its own SOCKS5 port:
+
+```python
+# By index
+resp = batch[0].get("https://api.ipify.org?format=json")
+print(resp.json())  # {"ip": "..."}
+
+# SOCKS URL for external clients
+print(batch[0].socks_url)   # socks5://127.0.0.1:40000
+
+# With requests library
+import requests
+requests.get("https://example.com", proxies=batch[0].proxies)
+
+# Iterate
+for proxy in batch:
+    print(proxy.protocol, proxy.socks_url)
+```
+
+**Check which ones work:**
+
+```python
+for result in batch.check(timeout=5, workers=10):
+    if result.working:
+        print(f"{result.protocol} OK {result.ip} {result.latency_ms:.0f}ms")
+
+# Or check + filter in one go
+for proxy in list(batch):
+    if not proxy.check().working:
+        batch.remove(proxy)
+# batch now contains only working proxies
+```
+
+**Chain through an upstream proxy:**
+
+```python
+# Via URL string
+batch = SingBoxBatch.from_file("proxies.txt", chain_proxy="trojan://upstream")
+
+# Via existing SingBoxProxy (same API as SingBoxProxy's chain_proxy)
+from singbox2proxy import SingBoxProxy
+upstream = SingBoxProxy("trojan://upstream")
+batch = SingBoxBatch.from_file("proxies.txt", chain_proxy=upstream)
+```
+
+**Add/remove at runtime:**
+
+```python
+# Add more proxies (starts a new sing-box process, returns new handles)
+new = batch.add(["trojan://new-one", "vmess://another"])
+print(new[0].socks_url)
+
+# Remove a proxy
+batch.remove(batch[0])
+print(len(batch))  # updated count
+```
+
+**Cleanup:**
+
+```python
+batch.stop()
+
+# Or use as context manager
+with SingBoxBatch.from_file("proxies.txt") as batch:
+    for proxy in batch:
+        proxy.get("https://example.com")
+```
+
 #### TUN Mode (System-Wide VPN)
 
 Create a virtual network interface to route all system traffic through the proxy. This requires root/administrator privileges.
@@ -159,7 +245,7 @@ input("Press Enter to stop...")
 proxy.stop()
 ```
 
-**Supported protocols:** `vmess`, `trojan`, `ss`, `socks`, `http`
+**Supported protocols:** `vmess`, `vless`, `trojan`, `ss`, `shadowsocks`, `socks`, `http`
 
 #### System Proxy Configuration
 
@@ -198,6 +284,45 @@ Test the proxy connection:
 
 ```shell
 sb2p "trojan://..." --test
+# sing-box 1.12.4
+#   http   http://127.0.0.1:57539
+#   socks  socks5://127.0.0.1:57540
+# test:
+#   latency  46/129/296 ms (min/avg/max)
+#   exit-ip  203.0.113.42
+#   result   PASS
+```
+
+Run a sing-box subcommand:
+
+```shell
+sb2p --cmd version
+sb2p -C "check -c config.json"
+```
+
+#### Batch Proxy Checking
+
+Check proxies from a file (one URL per line):
+
+```shell
+# Basic check
+sb2p --check proxies.txt
+
+# Save working proxies, sorted by latency
+sb2p --check proxies.txt -o working.txt
+
+# Tune concurrency
+sb2p --check proxies.txt --workers 20 --batch-size 100 --timeout 8
+
+# Check through an upstream proxy (chain)
+sb2p "trojan://upstream" --check proxies.txt
+
+# Quiet mode — summary only
+sb2p --check proxies.txt -q
+# 78/200 working (39%) in 8.1s
+
+# Verbose mode — see dead proxies too
+sb2p --check proxies.txt -v
 ```
 
 #### Proxy Chaining
@@ -224,21 +349,33 @@ sb2p "ss://original-proxy" --relay ss
 # Direct connection relay (no proxy, just share your server's internet)
 sb2p --relay ss
 
-# Output includes a shareable URL:
-#   Relay URL: vless://uuid@your-ip:port?type=tcp&security=none#singbox2proxy-relay
-#   Share this URL to relay traffic through your server
+# Output includes a shareable URL + QR code:
+#   relay  vless://uuid@your-ip:port?type=tcp&security=none#singbox2proxy-relay
 ```
 
 Supported relay protocols: `vmess`, `trojan`, `ss`/`shadowsocks`, `socks`, `http`
+
+**Persistent relay URLs** with `--uuid-seed` (same seed = same URL every restart):
+
+> [!NOTE]
+> Consider also setting a custom `--relay-port` to avoid port change, since the default is to auto-assign an available port.
+
+```shell
+sb2p --relay vmess --uuid-seed "my-persistent-seed" --relay-port 12345
+#   relay  vmess://a1b2c3d4-...@203.0.113.42:12345
+
+sb2p --relay vmess --uuid-seed "my-persistent-seed" --relay-port 54321
+#   relay  vmess://a1b2c3d4-...@203.0.113.42:54321
+```
 
 Custom host and port:
 
 ```shell
 sb2p "ss://..." --relay ss --relay-host "myserver.com" --relay-port 8443
-
-# Direct connection with custom settings
-sb2p --relay ss --relay-host "myserver.com" --relay-port 8443
 ```
+
+> [!NOTE]
+> QR rendering requires the `qrcode` package: `pip install qrcode`
 
 #### Configuration Management
 

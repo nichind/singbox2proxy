@@ -11,7 +11,7 @@ dynamic = ["version"]
 authors = [
     {name = "nichind", email = "nichind@proton.me"},
 ]
-description = "🐳 Use sing-box (v2ray) proxies (VLESS + REALITY, VMess, Trojan, Shadowsocks, Hysteria, Hysteria2, TUIC, WireGuard, SSH) directly in your http clients, with chaining support and easy CLI"
+description = "🐳 Use sing-box (v2ray, xray) proxies (VLESS + REALITY, VMess, Trojan, Shadowsocks, Hysteria, Hysteria2, TUIC, WireGuard, SSH) directly in your http clients, with chaining support and easy CLI + Relay your traffic to bypass WHITELISTS"
 readme = "readme.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -45,7 +45,7 @@ sb2p = "singbox2proxy.__main__:main"
 "Issues" = "https://github.com/nichind/singbox2proxy/issues"
 
 [tool.setuptools]
-packages = {find = {}}
+packages = {find = {exclude = ["tests", "tests.*", "sb2p", "sb2p.*"]}}
 
 [tool.ruff]
 line-length = 140
