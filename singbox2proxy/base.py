@@ -2325,12 +2325,7 @@ class SingBoxProxy:
                     "strict_route": True,
                     "stack": self.tun_stack,
                 }
-                if (
-                    self.tun_auto_redirect
-                    and self.tun_auto_route
-                    and sys.platform.startswith("linux")
-                    and core_version >= (1, 10, 0)
-                ):
+                if self.tun_auto_redirect and self.tun_auto_route and sys.platform.startswith("linux") and core_version >= (1, 10, 0):
                     tun_inbound["auto_redirect"] = True
                 # sniff on inbound: works <1.13
                 if core_version < (1, 13, 0):

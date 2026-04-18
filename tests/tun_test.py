@@ -93,9 +93,7 @@ def _has_privileges() -> bool:
 
 
 @unittest.skipUnless(
-    TEST_LINK
-    and (sys.platform.startswith("linux") or sys.platform.startswith("win"))
-    and _has_privileges(),
+    TEST_LINK and (sys.platform.startswith("linux") or sys.platform.startswith("win")) and _has_privileges(),
     "Live TUN test requires Linux/Windows + root/admin + TEST_SINGBOX_LINK",
 )
 class TestTunLiveSystemVpn(unittest.TestCase):
