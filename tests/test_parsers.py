@@ -563,19 +563,13 @@ class TestConfigGeneration(unittest.TestCase):
         cfg = p.generate_config()
         tags = [ib["tag"] for ib in cfg["inbounds"]]
         self.assertIn("tun-in", tags)
-        # TUN needs auto_detect_interface in route
         self.assertTrue(cfg["route"]["auto_detect_interface"])
-        # TUN needs explicit route.final
         self.assertEqual(cfg["route"]["final"], "proxy")
-        # TUN needs DNS config
         self.assertIn("dns", cfg)
         self.assertTrue(len(cfg["dns"]["servers"]) >= 2)
-        # proxy-dns resolves through proxy, direct-dns for outbound resolution
         dns_tags = [s["tag"] for s in cfg["dns"]["servers"]]
         self.assertIn("proxy-dns", dns_tags)
         self.assertIn("direct-dns", dns_tags)
-        # outbound: "any" rule prevents DNS loop for proxy server domain
-        self.assertTrue(any(r.get("outbound") == "any" for r in cfg["dns"]["rules"]))
 
     def test_tun_sniff_on_old_singbox(self):
         p = SingBoxProxy("socks5://127.0.0.1:1080", config_only=True, tun_enabled=True)
@@ -608,33 +602,26 @@ class TestConfigGeneration(unittest.TestCase):
         self.assertIn("dns-out", out_tags)
         self.assertTrue(any(r.get("outbound") == "dns-out" for r in cfg["route"]["rules"]))
 
-    def test_tun_dns_new_format_on_114(self):
-        """1.14+ needs new DNS server format (legacy removed)."""
+    def test_tun_dns_new_format_on_112(self):
+        """1.12+ uses new DNS server format (legacy removed at runtime in 1.14)."""
         p = SingBoxProxy("socks5://127.0.0.1:1080", config_only=True, tun_enabled=True)
-        with patch.object(type(p), "_parse_core_version", return_value=(1, 14, 0)):
+        with patch.object(type(p), "_parse_core_version", return_value=(1, 12, 0)):
             cfg = p.generate_config()
-        # New format: servers have 'type' field
         for srv in cfg["dns"]["servers"]:
             self.assertEqual(srv["type"], "https")
             self.assertIn("server", srv)
-        # No legacy 'address' field
-        for srv in cfg["dns"]["servers"]:
             self.assertNotIn("address", srv)
-        # Uses domain_resolver instead of outbound DNS rule
         self.assertIn("default_domain_resolver", cfg["route"])
-        # No outbound: "any" rule in DNS
         self.assertNotIn("rules", cfg["dns"])
 
-    def test_tun_dns_legacy_format_on_113(self):
-        """1.13 still uses legacy DNS format."""
+    def test_tun_dns_legacy_format_on_111(self):
+        """<=1.11 still uses legacy DNS format."""
         p = SingBoxProxy("socks5://127.0.0.1:1080", config_only=True, tun_enabled=True)
-        with patch.object(type(p), "_parse_core_version", return_value=(1, 13, 0)):
+        with patch.object(type(p), "_parse_core_version", return_value=(1, 11, 0)):
             cfg = p.generate_config()
-        # Legacy format: 'address' field, no 'type'
         for srv in cfg["dns"]["servers"]:
             self.assertIn("address", srv)
             self.assertNotIn("type", srv)
-        # Has outbound: "any" rule
         self.assertTrue(any(r.get("outbound") == "any" for r in cfg["dns"]["rules"]))
 
     def test_route_passthrough(self):

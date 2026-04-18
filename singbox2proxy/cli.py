@@ -270,6 +270,10 @@ examples:
     tun_group.add_argument("--tun-mtu", type=int, default=9000, help="TUN MTU (default: 9000)")
     tun_group.add_argument("--tun-auto-route", action="store_true", default=True, help="Auto-configure routes (default: on)")
     tun_group.add_argument("--no-tun-auto-route", dest="tun_auto_route", action="store_false", help="Disable auto routing")
+    tun_group.add_argument("--tun-auto-redirect", dest="tun_auto_redirect", action="store_true", default=None,
+                           help="Enable Linux nftables auto_redirect (default: on for Linux)")
+    tun_group.add_argument("--no-tun-auto-redirect", dest="tun_auto_redirect", action="store_false",
+                           help="Disable auto_redirect")
 
     relay_group = parser.add_argument_group("relay")
     relay_group.add_argument("--relay-host", help="Host/IP for relay URL (default: auto-detect)")
@@ -375,6 +379,7 @@ examples:
                     tun_stack=args.tun_stack,
                     tun_mtu=args.tun_mtu,
                     tun_auto_route=args.tun_auto_route,
+                    tun_auto_redirect=args.tun_auto_redirect,
                     set_system_proxy=args.set_system_proxy if is_last else False,
                 )
                 proxies.append(proxy)
@@ -394,6 +399,7 @@ examples:
                 tun_stack=args.tun_stack,
                 tun_mtu=args.tun_mtu,
                 tun_auto_route=args.tun_auto_route,
+                tun_auto_redirect=args.tun_auto_redirect,
                 set_system_proxy=args.set_system_proxy,
                 relay_protocol=args.relay,
                 relay_host=args.relay_host,

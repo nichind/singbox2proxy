@@ -1443,6 +1443,7 @@ class SingBoxProxy:
         tun_stack: str = "system",
         tun_mtu: int = 9000,
         tun_auto_route: bool = True,
+        tun_auto_redirect: bool | None = None,
         set_system_proxy: bool = False,
         route: dict = None,
         relay_protocol: str = None,
@@ -1541,6 +1542,9 @@ class SingBoxProxy:
         self.tun_stack = tun_stack
         self.tun_mtu = tun_mtu
         self.tun_auto_route = tun_auto_route
+        if tun_auto_redirect is None:
+            tun_auto_redirect = sys.platform.startswith("linux")
+        self.tun_auto_redirect = tun_auto_redirect
         self.set_system_proxy = set_system_proxy
         self.route = route
 
@@ -2321,6 +2325,13 @@ class SingBoxProxy:
                     "strict_route": True,
                     "stack": self.tun_stack,
                 }
+                if (
+                    self.tun_auto_redirect
+                    and self.tun_auto_route
+                    and sys.platform.startswith("linux")
+                    and core_version >= (1, 10, 0)
+                ):
+                    tun_inbound["auto_redirect"] = True
                 # sniff on inbound: works <1.13
                 if core_version < (1, 13, 0):
                     tun_inbound["sniff"] = True
@@ -2349,8 +2360,7 @@ class SingBoxProxy:
 
                 # Use DoH to 1.1.1.1 (IP, no resolution needed) through proxy.
                 # direct-dns resolves proxy server's own domain to avoid circular dependency.
-                if core_version >= (1, 14, 0):
-                    # New DNS server format (legacy removed in 1.14)
+                if core_version >= (1, 12, 0):
                     config["dns"] = {
                         "servers": [
                             {"type": "https", "tag": "proxy-dns", "server": "1.1.1.1", "detour": outbound.get("tag", "proxy")},
@@ -2358,10 +2368,8 @@ class SingBoxProxy:
                         ],
                         "strategy": "prefer_ipv4",
                     }
-                    # 1.12+: domain_resolver on route replaces outbound DNS rules
                     config["route"]["default_domain_resolver"] = "direct-dns"
                 else:
-                    # Legacy DNS format (works through 1.13.x)
                     config["dns"] = {
                         "servers": [
                             {"tag": "proxy-dns", "address": "https://1.1.1.1/dns-query", "detour": outbound.get("tag", "proxy")},

@@ -41,4 +41,15 @@ jobs:
           python -m pip install -e .
       - name: Run Tests
         run: |
-          python -m pytest tests/ --tb=short --disable-warnings
+          python -m pytest tests/ --tb=short --disable-warnings --ignore=tests/tun_test.py
+      - name: Run TUN config tests
+        run: |
+          python -m pytest tests/tun_test.py::TestTunConfig --tb=short --disable-warnings -v
+      - name: Run TUN live test (Linux)
+        if: runner.os == 'Linux' && env.TEST_SINGBOX_LINK != ''
+        run: |
+          sudo -E env "PATH=$PATH" "TEST_SINGBOX_LINK=$TEST_SINGBOX_LINK" "$pythonLocation/bin/python" -m pytest tests/tun_test.py::TestTunLiveSystemVpn --tb=short --disable-warnings -v
+      - name: Run TUN live test (Windows)
+        if: runner.os == 'Windows' && env.TEST_SINGBOX_LINK != ''
+        run: |
+          python -m pytest tests/tun_test.py::TestTunLiveSystemVpn --tb=short --disable-warnings -v
