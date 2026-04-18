@@ -608,9 +608,11 @@ class TestConfigGeneration(unittest.TestCase):
         with patch.object(type(p), "_parse_core_version", return_value=(1, 12, 0)):
             cfg = p.generate_config()
         for srv in cfg["dns"]["servers"]:
-            self.assertEqual(srv["type"], "https")
-            self.assertIn("server", srv)
+            self.assertIn("type", srv)
             self.assertNotIn("address", srv)
+        types = {s["tag"]: s["type"] for s in cfg["dns"]["servers"]}
+        self.assertEqual(types.get("proxy-dns"), "https")
+        self.assertEqual(types.get("direct-dns"), "local")
         self.assertIn("default_domain_resolver", cfg["route"])
         self.assertNotIn("rules", cfg["dns"])
 

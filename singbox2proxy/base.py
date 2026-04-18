@@ -2364,7 +2364,7 @@ class SingBoxProxy:
                     config["dns"] = {
                         "servers": [
                             {"type": "https", "tag": "proxy-dns", "server": "1.1.1.1", "detour": outbound.get("tag", "proxy")},
-                            {"type": "https", "tag": "direct-dns", "server": "1.1.1.1", "detour": "direct"},
+                            {"type": "local", "tag": "direct-dns"},
                         ],
                         "strategy": "prefer_ipv4",
                     }
