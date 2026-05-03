@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sb2p"
-version = "0.3.3"
+version = "0.3.4"
 authors = [{name = "nichind", email = "nichind@proton.me"}]
 description = "Alias for singbox2proxy — pip install sb2p"
 readme = "readme.md"
