@@ -79,12 +79,6 @@ jobs:
             --nofollow-import-to=ensurepip \
             scripts/entry.py
 
-      - name: Compress with UPX (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get install -y upx-ucl || sudo apt-get install -y upx
-          upx --best --lzma "dist/sb2p" || true
-
       - name: Compress with UPX (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
