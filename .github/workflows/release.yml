@@ -46,7 +46,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install nuitka ordered-set zstandard
-          python -m pip install -e ".[cli]"
+          python -m pip install -e ".[cli,http]"
 
       - name: Install C compiler (Linux)
         if: runner.os == 'Linux'
@@ -66,6 +66,8 @@ jobs:
             --include-package=singbox2proxy \
             --include-module=qrcode \
             --include-module=psutil \
+            --include-module=requests \
+            --include-module=urllib3 \
             --nofollow-import-to=tkinter \
             --nofollow-import-to=unittest \
             --nofollow-import-to=test \
