@@ -46,7 +46,7 @@ jobs:
         run: |
           python -m pytest tests/tun_test.py::TestTunConfig --tb=short --disable-warnings -v
       - name: Run TUN live test (Linux)
-        if: runner.os == 'Linux' && env.TEST_SINGBOX_LINK != ''
+        if: runner.os == 'Linux' && env.TEST_SINGBOX_LINK !=  ''
         run: |
           sudo -E env "PATH=$PATH" "TEST_SINGBOX_LINK=$TEST_SINGBOX_LINK" "$pythonLocation/bin/python" -m pytest tests/tun_test.py::TestTunLiveSystemVpn --tb=short --disable-warnings -v
       - name: Run TUN live test (Windows)

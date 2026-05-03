@@ -31,7 +31,37 @@ This module supports these sing-box protocols:
 
 ### Installation
 
-with pip
+#### Quick Install (no Python required)
+
+**Linux / macOS:**
+```shell
+curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.ps1 | iex
+```
+
+By default this downloads a standalone binary. To install via Python/pip instead:
+```shell
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.sh | sh -s -- --python
+
+# Windows
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.ps1))) -Mode python
+```
+
+Both `sb2p` and `singbox2proxy` commands are created automatically.
+
+#### Standalone Binary (no Python, no pip)
+
+Download a pre-built binary from [Releases](https://github.com/nichind/singbox2proxy/releases) — just download, put anywhere in PATH, and use:
+```shell
+sb2p "vless://..."
+```
+
+#### With pip
 
 ```shell
 pip install singbox2proxy 

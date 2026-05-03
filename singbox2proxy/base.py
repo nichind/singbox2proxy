@@ -922,6 +922,178 @@ class SingBoxCore:
             logger.error("All package manager installation attempts failed")
             return False
 
+        def _install_from_github_release(version: str | None = None) -> bool:
+            """Download sing-box binary from GitHub Releases as a last resort.
+
+            Downloads the appropriate archive for the current platform/arch,
+            extracts the sing-box executable, and places it in a directory on PATH.
+
+            Args:
+                version: Specific version to download (e.g. "1.12.8"). If None, fetches latest.
+
+            Returns:
+                bool: True if installation succeeded, False otherwise.
+            """
+            import platform as _platform
+            import zipfile
+            import tarfile
+
+            logger.info("Attempting to download sing-box from GitHub Releases")
+
+            # Determine platform and architecture
+            system = _platform.system().lower()  # windows, linux, darwin
+            machine = _platform.machine().lower()
+
+            arch_map = {
+                "x86_64": "amd64",
+                "amd64": "amd64",
+                "aarch64": "arm64",
+                "arm64": "arm64",
+                "armv7l": "armv7",
+                "i386": "386",
+                "i686": "386",
+            }
+            arch = arch_map.get(machine, machine)
+
+            if system == "windows":
+                asset_suffix = f"windows-{arch}.zip"
+            elif system == "darwin":
+                asset_suffix = f"darwin-{arch}.tar.gz"
+            else:
+                asset_suffix = f"linux-{arch}.tar.gz"
+
+            try:
+                # Get latest release info if no version specified
+                if not version:
+                    api_url = "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+                    req = urllib.request.Request(
+                        api_url,
+                        headers={"User-Agent": "singbox2proxy", "Accept": "application/vnd.github+json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        release_data = json.loads(resp.read().decode())
+                    tag = release_data["tag_name"].lstrip("v")
+                else:
+                    tag = version.lstrip("v")
+
+                # Construct download URL
+                asset_name = f"sing-box-{tag}-{asset_suffix}"
+                download_url = f"https://github.com/SagerNet/sing-box/releases/download/v{tag}/{asset_name}"
+                logger.info(f"Downloading sing-box from: {download_url}")
+
+                # Download to temp directory
+                tmp_dir = tempfile.mkdtemp(prefix="singbox_install_")
+                archive_path = os.path.join(tmp_dir, asset_name)
+
+                req = urllib.request.Request(
+                    download_url,
+                    headers={"User-Agent": "singbox2proxy"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    with open(archive_path, "wb") as f:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+
+                logger.info(f"Downloaded {asset_name} to {archive_path}")
+
+                # Extract
+                extract_dir = os.path.join(tmp_dir, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
+
+                if archive_path.endswith(".zip"):
+                    with zipfile.ZipFile(archive_path, "r") as zf:
+                        for member in zf.namelist():
+                            member_path = os.path.realpath(os.path.join(extract_dir, member))
+                            if not member_path.startswith(os.path.realpath(extract_dir)):
+                                logger.warning(f"Skipping suspicious zip entry: {member}")
+                                continue
+                            zf.extract(member, extract_dir)
+                elif archive_path.endswith(".tar.gz") or archive_path.endswith(".tgz"):
+                    with tarfile.open(archive_path, "r:gz") as tf:
+                        for member in tf.getmembers():
+                            member_path = os.path.realpath(os.path.join(extract_dir, member.name))
+                            if not member_path.startswith(os.path.realpath(extract_dir)):
+                                logger.warning(f"Skipping suspicious tar entry: {member.name}")
+                                continue
+                            tf.extract(member, extract_dir)
+                else:
+                    logger.warning(f"Unknown archive format: {archive_path}")
+                    return False
+
+                # Find the sing-box executable in extracted files
+                exe_name = "sing-box.exe" if system == "windows" else "sing-box"
+                exe_path = None
+                for root, dirs, files in os.walk(extract_dir):
+                    if exe_name in files:
+                        exe_path = os.path.join(root, exe_name)
+                        break
+
+                if not exe_path:
+                    logger.warning(f"Could not find {exe_name} in extracted archive")
+                    return False
+
+                # Determine install location
+                if system == "windows":
+                    # Install to user's local AppData bin directory
+                    install_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "sing-box")
+                    os.makedirs(install_dir, exist_ok=True)
+                    dest = os.path.join(install_dir, exe_name)
+                    shutil.copy2(exe_path, dest)
+
+                    # Add to PATH for current process
+                    current_path = os.environ.get("PATH", "")
+                    if install_dir not in current_path:
+                        os.environ["PATH"] = install_dir + os.pathsep + current_path
+                        # Also try to add to user PATH permanently via registry
+                        try:
+                            import winreg
+
+                            with winreg.OpenKey(
+                                winreg.HKEY_CURRENT_USER,
+                                r"Environment",
+                                0,
+                                winreg.KEY_READ | winreg.KEY_WRITE,
+                            ) as key:
+                                try:
+                                    user_path, _ = winreg.QueryValueEx(key, "Path")
+                                except FileNotFoundError:
+                                    user_path = ""
+                                if install_dir not in user_path:
+                                    new_path = install_dir + os.pathsep + user_path if user_path else install_dir
+                                    winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                                    logger.info(f"Added {install_dir} to user PATH (restart terminal to take effect)")
+                        except Exception as e:
+                            logger.warning(f"Could not add to user PATH permanently: {e}")
+                            logger.info(f"sing-box installed to {install_dir}. Add this to your PATH manually.")
+                else:
+                    # Unix: install to ~/.local/bin
+                    install_dir = os.path.expanduser("~/.local/bin")
+                    os.makedirs(install_dir, exist_ok=True)
+                    dest = os.path.join(install_dir, exe_name)
+                    shutil.copy2(exe_path, dest)
+                    os.chmod(dest, 0o755)
+
+                    current_path = os.environ.get("PATH", "")
+                    if install_dir not in current_path:
+                        os.environ["PATH"] = install_dir + os.pathsep + current_path
+
+                logger.info(f"sing-box installed to: {dest}")
+
+                # Cleanup temp files
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+                return True
+
+            except Exception as e:
+                logger.warning(f"Failed to install sing-box from GitHub Releases: {e}")
+                return False
+
         def _env_bool(*names: str, default: bool = False) -> bool:
             truthy = {"1", "true", "yes", "on", "y", "t"}
             falsy = {"0", "false", "no", "off", "n", "f"}
@@ -1142,6 +1314,14 @@ class SingBoxCore:
                     return "sing-box"
         except Exception as e:
             logger.warning(f"Failed to install sing-box via package manager: {e}")
+
+        # Last resort: download directly from GitHub Releases
+        try:
+            if _install_from_github_release(version=version_str):
+                if _test_terminal():
+                    return "sing-box"
+        except Exception as e:
+            logger.warning(f"Failed to install sing-box from GitHub Releases: {e}")
 
         logger.warning("sing-box could not be installed automatically. Please install it manually.")
         return None
@@ -2645,10 +2825,22 @@ class SingBoxProxy:
                 config_path = self.create_config_file()
 
             # Validate configuration before starting
-            if self.core and self.core.executable:
-                is_valid, msg = self.core.check_config(config_path)
-                if not is_valid:
-                    raise ValueError(f"Invalid sing-box configuration: {msg}")
+            if not self.core or not self.core.executable:
+                if os.name == "nt":
+                    hint = "  Windows: scoop install sing-box  OR  winget install sing-box"
+                elif sys.platform == "darwin":
+                    hint = "  macOS:   brew install sing-box"
+                else:
+                    hint = "  Linux:   sudo apt install sing-box  OR  see https://sing-box.sagernet.org/installation/package-manager/"
+                raise FileNotFoundError(
+                    "sing-box executable not found. Please install it manually:\n"
+                    f"{hint}\n"
+                    "  Download: https://github.com/SagerNet/sing-box/releases"
+                )
+
+            is_valid, msg = self.core.check_config(config_path)
+            if not is_valid:
+                raise ValueError(f"Invalid sing-box configuration: {msg}")
 
             # Prepare command and environment
             cmd = [self.core.executable, "run", "-c", config_path]

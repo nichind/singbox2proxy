@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sb2p"
-version = "0.3.0"
+version = "0.3.2"
 authors = [{name = "nichind", email = "nichind@proton.me"}]
 description = "Alias for singbox2proxy — pip install sb2p"
+readme = "readme.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 keywords = ["sing-box", "proxy", "sb2p", "singbox2proxy"]
-dependencies = ["singbox2proxy==0.3.0"]
+dependencies = ["singbox2proxy"]
 
 [project.scripts]
 sb2p = "singbox2proxy.__main__:main"

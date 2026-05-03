@@ -36,6 +36,13 @@ keywords = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+cli = ["qrcode", "psutil"]
+http = ["requests"]
+fast = ["curl-cffi"]
+socks = ["pysocks"]
+all = ["qrcode", "psutil", "requests", "curl-cffi", "pysocks"]
+
 [project.scripts]
 singbox2proxy = "singbox2proxy.__main__:main"
 sb2p = "singbox2proxy.__main__:main"
