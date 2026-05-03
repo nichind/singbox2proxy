@@ -52,8 +52,6 @@ curl -fsSL https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/nichind/singbox2proxy/main/scripts/install.ps1))) -Mode python
 ```
 
-Both `sb2p` and `singbox2proxy` commands are created automatically.
-
 #### Standalone Binary (no Python, no pip)
 
 Download a pre-built binary from [Releases](https://github.com/nichind/singbox2proxy/releases) — just download, put anywhere in PATH, and use:

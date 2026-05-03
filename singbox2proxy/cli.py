@@ -5,6 +5,7 @@ import signal
 import json
 import os
 from .base import SingBoxProxy, _get_default_core, _cleanup_all_processes, enable_logging, disable_logging  # noqa: F401
+from . import VERSION
 import logging
 
 # ---------------------------------------------------------------------------
@@ -246,6 +247,7 @@ examples:
         """,
     )
 
+    parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {VERSION}")
     parser.add_argument("urls", nargs="*", help="Proxy URL(s). Use --chain with multiple URLs.")
 
     mode_group = parser.add_argument_group("mode")

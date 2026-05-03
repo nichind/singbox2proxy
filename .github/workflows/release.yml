@@ -74,7 +74,7 @@ jobs:
             --nofollow-import-to=pdb \
             --nofollow-import-to=lib2to3 \
             --nofollow-import-to=ensurepip \
-            singbox2proxy/__main__.py
+            scripts/entry.py
 
       - name: Compress with UPX (Linux)
         if: runner.os == 'Linux'
